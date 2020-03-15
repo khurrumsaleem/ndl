@@ -7,7 +7,7 @@
 # |_| \_|______|_|  |_|\____/  #
 #                              #
 ################################
-# Author: N. Abrate
+# Authors: N. Abrate (inspired by an Octave script by D. Caron, C. Di Gesare)
 # File: ProcessNDL.py
 # Description:
 
@@ -24,63 +24,97 @@ from operator import itemgetter
 from os.path import isfile, join
 
 
-def buildacelib(inpath, datapath, libext, outpath=None, njoyver=2016):
-
-    # create "out" tree
-    if outpath is None:
-        outpath = "out"
-    else:
-        outpath = os.path.join(outpath, "out")
-
-    # create "out" sub-dirs
-    dirnames = ["pendfdir_bin", "acedir", "xsdir", "njoyout", "njoyinp",
-                "viewheatdir", "viewacedir"]
-    [mkdir(name, outpath) for name in dirnames]
-
-    # gather input files
-    inpfiles = [f for f in sorted(os.listdir(inpath))
-                if isfile(join(inpath, f))
-                if f.endswith(".njoyinp")]
-
-    # change working directory
-    os.chdir(outpath)
-    # process input with NJOY
-    for f in inpfiles:
-        # FIXME make CPU-wise tmp dirs, use multiprocessing
-        # move input file
-        sh.move(os.path.join(inpath, f), os.path.join(outpath, f))
-        # define file names
-        fname_tmp, ext = os.path.splitext(f)
-        fname, tmp = fname_tmp.split("_")
-        if libext is not None:
-            endfname = fname+"."+libext
-        else:
-            endfname = fname
-        # move ENDF-6 files in input dir
-        sh.move(os.path.join(datapath, endfname), 
-                os.path.join(outpath, "tape20"))
-        # run NJOY, then clean directory
-        print("Processing %s..." % f)
-        run_njoy(f, njoyver=2016)
-        move_and_clean(f, outpath, datapath, endfname)
-        print("DONE")
+# define particles synonims dict
+partdict = {"n": ["neutron", "neutrons", "neutronic", "n"],
+            "pa": ["photon", "photons", "photo-atomic", "photoatomic",
+                   "pa"],
+            "pn": ["gamma", "photo-nuclear", "photonuclear", "pn"]}
 
 
-def move_and_clean(inp, path, datapath, endfname):
+def buildacelib(inpath, datapath, libext, particles, njoyver=2016, 
+                atrelaxpath=None):
+
+    # define "out" tree
+    baseoutpath = os.path.join(datapath, "out")
+    
+    # loop over projectiles
+    for part in particles:
+        
+        # define particle key
+        for key, names in partdict.items():
+            if part in names:
+                proj = key
+
+        # define particle-wise directory
+        outpath = os.path.join(baseoutpath, proj)
+        # create "out" sub-dirs
+        dirnames = ["pendfdir_bin", "acedir", "xsdir", "njoyout", "njoyinp",
+                    "viewheatdir", "viewacedir"]
+        [mkdir(name, outpath) for name in dirnames]
+    
+        # gather input files
+        inpfiles = [f for f in sorted(os.listdir(os.path.join(inpath, proj)))
+                    if isfile(join(inpath, proj, f))
+                    if f.endswith(".njoyinp")]
+    
+        # change working directory
+        os.chdir(outpath)
+        # process input with NJOY
+        for f in inpfiles:
+            # FIXME make CPU-wise tmp dirs, use multiprocessing
+            # move input file
+            sh.move(os.path.join(inpath, f), os.path.join(outpath, f))
+            # define file names
+            fname_tmp, ext = os.path.splitext(f)
+            fname, tmp = fname_tmp.split("_")
+            if libext is not None:
+                endfname = fname+"."+libext
+            else:
+                endfname = fname
+            # move ENDF-6 files in input dir
+            sh.move(os.path.join(datapath, endfname), 
+                    os.path.join(outpath, "tape20"))
+            # run NJOY, then clean directory
+            print("Processing %s..." % f)
+            run_njoy(f, njoyver=2016)
+            move_and_clean(f, outpath, datapath, endfname, proj)
+            print("DONE")
+
+
+def move_and_clean(inp, path, datapath, endfname, proj):
 
     # split input name
     ZAIDT, ext = os.path.splitext(inp)
-    # FIXME 2 proj info missing, create dict of dicts with "n", "pa", "pn" as keys
 
-    # dict with names of files to be kept
-    dirnames = {datapath: "tape20", "pendfdir_bin": "tape26", 
-                "acedir": "tape29", "xsdir": "tape30_1", 
-                "njoyout": "out.gz", "viewheatdir": "tape35",
-                "viewacedir": "tape34", "njoyinp": inp}
-    # dict with new names
-    extnames = {"tape20": endfname, "tape26": ".pendf", "tape29": ".ace",
-                "tape30_1": ".xsdir", "out.gz": ".out.gz", "tape34": ".eps", 
-                "tape35": ".eps", inp: ".njoyinp"}
+    # FIXME: pa needs also atomic relaxation factors files to be handled!
+
+    # define common dictionaries
+
+    # neutrons dict with names of files to be kept when cleaning files
+    dir_names = {"n": {datapath: "tape20", "pendfdir_bin": "tape26", "acedir":
+                       "tape29", "xsdir": "tape30_1", "njoyout": "out.gz",
+                       "viewheatdir": "tape35", "viewacedir": "tape34",
+                       "njoyinp": inp},
+                "pa": {datapath: "tape20", "acedir": "tape29", 
+                       "xsdir": "tape30_1", "njoyout": "out.gz",
+                       "viewacedir": "tape34", "njoyinp": inp},
+                "pn": {datapath: "tape20", "pendfdir_bin": "tape22", "acedir":
+                       "tape29", "xsdir": "tape30_1", "njoyout": "out.gz",
+                       "viewacedir": "tape34", "njoyinp": inp}}
+
+    # neutrons dict with new names when moving files
+    ext_names = {"n": {"tape20": endfname, "tape26": ".pendf", 
+                       "tape29": ".ace", "tape30_1": ".xsdir",
+                       "out.gz": ".out.gz", "tape34": ".eps", "tape35": ".eps",
+                       inp: ".njoyinp"},
+                 "pa": {"tape20": endfname, "tape29": ".ace",
+                        "tape30_1": ".xsdir", "out.gz": ".out.gz",
+                        "tape34": ".eps", 
+                        inp: ".njoyinp"},
+                 "pn": {"tape20": endfname, "tape22": ".pendf",
+                        "tape29": ".ace", "tape30_1": ".xsdir",
+                        "out.gz": ".out.gz", "tape34": ".eps", 
+                        inp: ".njoyinp"}}
 
     # edit xsdir default content
     find_replace = {"filename": ZAIDT+".ace", "route": "0"} 
@@ -95,18 +129,18 @@ def move_and_clean(inp, path, datapath, endfname):
                 fnew.write(line)
 
     # loop over dictionaries
-    for dirname, fname in dirnames.items():
+    for dirname, fname in dir_names.items():
         # ENDF-6 back to data directory
         if fname != "tape20":
             ipath = os.path.join(path, fname)
-            opath = os.path.join(path, dirname, ZAIDT+extnames[fname])
+            opath = os.path.join(path, dirname, ZAIDT+ext_names[proj][fname])
             # move and rename file
             sh.move(ipath, opath)
         # other files in "out" tree
         else:
             # ENDF-6 back to data dir
             ipath = os.path.join(path, fname)
-            opath = os.path.join(datapath, extnames[fname])
+            opath = os.path.join(datapath, ext_names[proj][fname])
             sh.move(ipath, opath)
 
     # clean base directory from other NJOY tapes
@@ -133,8 +167,8 @@ def run_njoy(inp, njoyver=2016):
         fgz.write(stream.encode())
 
 
-def makeinput(datapath, pattern, proj, libname, broad_temp, outpath=None,
-              njoyver=2016):
+def makeinput(datapath, pattern, part, libname, broad_temp=None, outpath=None,
+              atomrelax_datapath=None, njoyver=2016):
 
     # FIXME try glob module to simplify these lines
     # find pattern separators
@@ -170,21 +204,35 @@ def makeinput(datapath, pattern, proj, libname, broad_temp, outpath=None,
                 if isfile(join(datapath, f))
                 if f.endswith(lib_extension)]
 
-    # make dir for input files
+    # define particle key
+    for key, names in partdict.items():
+        if part in names:
+            proj = key
+
+    # gather atomic relaxation ENDF-6 files in datapath
+    if atomrelax_datapath is None and proj == "pa":
+        raise OSError("Atomic relaxation data path not provided!")
+    if atomrelax_datapath is not None:
+        ar_endfiles = [f for f in sorted(os.listdir(atomrelax_datapath))
+                       if isfile(join(atomrelax_datapath, f))
+                       if f.endswith(lib_extension)]
+
     outpath = mkdir("njoyinp", outpath)
     # make projectile-wise dir
     outpath = mkdir(proj, outpath)
 
     # generates input only for files with AS or Z inside elementdict
-    for endf in endfiles:
+    for ifile, endf in enumerate(endfiles):
 
         # split extension
         nuclname, lib_extension = os.path.splitext(endf)
         # split according to separators
         iS, iE = re.search(pattern, endf).span()
         nuclname = nuclname[iS:iE]
-        keys = re.split(r"["+filesep+"]+", nuclname)
-
+        if filesep != '':
+            keys = re.split(r"["+filesep+"]+", nuclname)
+        else:
+            keys = [nuclname]
         # get atomic number Z and atomic symbol AS
         try:  # name contains atomic symbol explicitly
             # get atomic symbol
@@ -211,7 +259,7 @@ def makeinput(datapath, pattern, proj, libname, broad_temp, outpath=None,
 
         metaflag = 0
         # get mass number A
-        if Z != -1:
+        if Z != -1 and (proj == "n" or proj == "pn"):
             try:
                 A = keys[patterndict["A"]]
                 # check if nuclide is metastable
@@ -266,7 +314,28 @@ def makeinput(datapath, pattern, proj, libname, broad_temp, outpath=None,
                 f.write(njoyinp)
                 f.close()
                 print("DONE \n")
+        elif Z != -1 and proj == "pa":
+            # rename ENDF-6 file with PoliTo nomenclature
+            endf = os.path.join(datapath, endf)
+            sh.move(endf, os.path.join(datapath, AS+lib_extension))
             
+            # rename also atomic relaxation ENDF-6 files
+            ar_endf = os.path.join(atomrelax_datapath, ar_endfiles[ifile])
+            sh.move(ar_endf, os.path.join(atomrelax_datapath, AS+lib_extension))
+            # print message for the user
+            print("Building input file for %s..." % (endf))
+            # define file content
+            njoyinp = build_njoy_deck(str(Z), AS, None, None, proj, libname, 
+                                      njoyver)
+            # save file in proper directory
+            fname = AS+"_00"
+            # define complete path
+            if outpath is not None:
+                fname = os.path.join(outpath, fname)
+            f = open(fname+".njoyinp", "w")
+            f.write(njoyinp)
+            f.close()
+            print("DONE \n")
         else:  # dummy value of Z means fake element
             print("Skipping %s-%s. It is not an element." % (AS, Z))
             
@@ -276,7 +345,8 @@ def build_njoy_deck(elem, ASA, MAT, tmp, proj, libname, vers):
     lst = []
     lstapp = lst.append
     # define temperature suffix
-    tmpsuff = "{:02d}".format(int(tmp/100))
+    if tmp is not None: 
+        tmpsuff = "{:02d}".format(int(tmp/100))
     # save datetime
     now = datetime.now()
     now = now.strftime("%d/%m/%Y, %H:%M:%S")
