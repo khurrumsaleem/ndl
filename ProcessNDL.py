@@ -15,10 +15,12 @@ import os
 import re
 import gzip
 import glob
+import tempfile
 import time as t
 import numpy as np
 import shutil as sh
 import multiprocessing as mp
+from itertools import groupby
 from datetime import datetime
 from socket import gethostname
 from operator import itemgetter
@@ -33,21 +35,30 @@ partdict = {"n": ["neutron", "neutrons", "neutronic", "n"],
 
 
 def buildacelib(inpath, libpath, data, libext, particles, njoyver=2016, 
-                atom_relax=None):
+                atom_relax=None, np=None, copyflag=False):
+
+    # define number of CPUs
+    if np is None:
+        np = mp.cpu_count()-2  # leave 2 free CPUs
+
+    # start parallel pool
+    pool = mp.Pool(np)
 
     # define "out" tree
     baseoutpath = os.path.join(libpath, "out")
 
+    # make input type consistent
     if type(particles) is str:
-        particles = [particles] 
-    # loop over projectiles
+        particles = [particles]
+
+    # loop over particles
     for part in particles:
         # define particle key
         for key, names in partdict.items():
             if part in names:
                 proj = key
 
-        # define particle-wise directory
+        # define particle-wise directory paths
         outpath = os.path.join(baseoutpath, proj)
         # create "out" sub-dirs
         outdirs = {"n": ["pendfdir_bin", "acedir", "xsdir", "njoyout", 
@@ -57,53 +68,90 @@ def buildacelib(inpath, libpath, data, libext, particles, njoyver=2016,
                           "njoyinp", "viewacedir"]}
 
         [mkdir(name, outpath) for name in outdirs[proj]]
-    
+
         # gather input files
         inpfiles = [f for f in sorted(os.listdir(os.path.join(inpath, proj)))
                     if isfile(join(inpath, proj, f))
                     if f.endswith(".njoyinp")]
+
         # print warning for the user
         if inpfiles == []:
             print("Warning: %s is empty!" % os.path.join(inpath, proj))
-    
-        # change working directory
-        os.chdir(outpath)
-        # process input with NJOY
-        for f in inpfiles:
-            # FIXME make CPU-wise tmp dirs, use multiprocessing
-            # move input file
-            sh.move(os.path.join(inpath, proj, f), os.path.join(outpath, f))
-            # define file names
-            fname_tmp, ext = os.path.splitext(f)
-            fname, tmp = fname_tmp.split("_")
 
-            if libext is not None:
-                endfname = fname+"."+libext
-            else:
-                endfname = fname
-            # move ENDF-6 files in input dir
-            sh.move(os.path.join(libpath, data, endfname), 
-                    os.path.join(outpath, "tape20"))
+        # process library with NJOY
+        if copyflag is False and (proj == "n" or proj == "pn"):
+            # divide inpfiles according to suffix
+            inpfilegroups = {}
+            for k, v in groupby(inpfiles, lambda s: s.split('_')[1]):
+                k = str(int(k.split('.')[0])*100)
+                inpfilegroups.setdefault(k, []).extend(v)
 
-            # move atomic relaxation ENDF-6 files in input dir
-            if proj == "pa":
-                sh.move(os.path.join(libpath, atom_relax, endfname), 
-                    os.path.join(outpath, "tape21"))
+            # serial on groups, parallel on nuclides
+            for k, group in inpfilegroups.items():
+                print("Processing nuclides at %s K..." % k)
+                # define list of arguments for parallel function
+                args = [(inpath, outpath, proj, libext, libpath, data, atom_relax, 
+                         copyflag)]
+                args = list(zip(group, args*len(inpfiles)))
+                # process input with NJOY on np cores
+                pool.map(par_ace_lib, args)
+                
+        else:  # no input grouping, not copying files
 
-            # run NJOY, then clean directory
-            start_time = t.time()
-            print("Processing %s..." % f.split(".")[0])
-            run_njoy(f, njoyver=2016)
-            move_and_clean(f, outpath, libpath, data, endfname, proj, 
-                           atom_relax)
-            print("DONE")
-            # print elapsed time
-            printime(start_time)
+            # define list of arguments for parallel function
+            args = [(inpath, outpath, proj, libext, libpath, data, atom_relax, 
+                     copyflag)]
+            args = list(zip(inpfiles, args*len(inpfiles)))
+            # process input with NJOY on np cores
+            pool.map(par_ace_lib, args)
 
         # final message for the user
-        print("The processed library is in %s" %outpath)
+        print("The processed library is stored in %s" % outpath)
 
-def move_and_clean(inp, path, libpath, data, endfname, proj, atom_relax=None):
+
+def par_ace_lib(args):
+
+    # unpack input arguments
+    f, tup = args
+    inpath, outpath, proj, libext, libpath, data, atom_relax, copyflag = tup
+    # create temporary directories in outpath to avoid mixing NJOY output
+    with tempfile.TemporaryDirectory(dir=outpath) as tmpath:
+
+        # work in temporary directory
+        os.chdir(tmpath)
+        # copy input file in working dir
+        sh.copyfile(os.path.join(inpath, proj, f), os.path.join(tmpath, f))
+
+        # define file names
+        fname_tmp, ext = os.path.splitext(f)
+        fname, tmp = fname_tmp.split("_")
+
+        if libext is not None:
+            endfname = fname+"."+libext
+        else:
+            endfname = fname
+        # move ENDF-6 files in input dir
+        sh.move(os.path.join(libpath, data, endfname), 
+                os.path.join(tmpath, "tape20"))
+        
+        # move atomic relaxation ENDF-6 files in input dir
+        if proj == "pa":
+            sh.move(os.path.join(libpath, atom_relax, endfname), 
+                os.path.join(tmpath, "tape21"))
+        
+        # run NJOY, then clean directory
+        start_time = t.time()
+        print("Processing %s..." % f.split(".")[0])
+        run_njoy(os.path.join(inpath, proj, f), njoyver=2016)
+        move_and_clean(f, outpath, tmpath, libpath, data, endfname, proj, 
+                       atom_relax)
+        print("DONE")
+
+        # print elapsed time
+        printime(start_time)
+
+
+def move_and_clean(inp, path, tmpath, libpath, data, endfname, proj, atom_relax=None):
 
     # split input name
     ZAIDT, ext = os.path.splitext(inp)
@@ -155,19 +203,19 @@ def move_and_clean(inp, path, libpath, data, endfname, proj, atom_relax=None):
     for dirname, fname in dir_names[proj].items():
         # other files in "out" tree
         if fname != "tape20" and fname != "tape21":
-            ipath = os.path.join(path, fname)
+            ipath = os.path.join(tmpath, fname)
             opath = os.path.join(path, dirname, ZAIDT+ext_names[proj][fname])
             # move and rename file
             sh.move(ipath, opath)
         # ENDF-6 back to data directory
         else:
             # ENDF-6 back to data dir
-            ipath = os.path.join(path, fname)
+            ipath = os.path.join(tmpath, fname)
             opath = os.path.join(dirname, ext_names[proj][fname])
             sh.move(ipath, opath)
 
     # clean base directory from other NJOY tapes
-    f_del = glob.glob(os.path.join(path, "tape*"))
+    f_del = glob.glob(os.path.join(tmpath, "tape*"))
     for f in f_del:
         os.remove(f)
     # remove output file
@@ -366,8 +414,8 @@ def makeinput(datapath, pattern, part, libname, broad_temp=None, outpath=None,
             print("DONE \n")
         else:  # dummy value of Z means fake element
             print("Skipping %s-%s. It is not an element." % (AS, Z))
-            
-            
+  
+    
 def build_njoy_deck(elem, ASA, MAT, tmp, proj, libname, vers):
     # list preallocation
     lst = []
@@ -525,6 +573,7 @@ def ZAS_periodic_table():
 
 
 def mkdir(dirname, path):
+
     if path is None:
         path = dirname
     else:
@@ -539,8 +588,7 @@ def printime(start_time):
     if dt < 60:
         print("Elapsed time %f s." % dt)
     elif dt >= 60:
-        print("Elapsed time %f m." % dt/60)
+        print("Elapsed time %f m." % (dt/60))
     elif dt >= 3600:
-        print("Elapsed time %f h." % dt/3600)
-        
-        
+        print("Elapsed time %f h." % (dt/3600))
+  
