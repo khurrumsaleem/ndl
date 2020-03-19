@@ -7,10 +7,15 @@
 # |_| \_|______|_|  |_|\____/  #
 #                              #
 ################################
-# Authors: N. Abrate (inspired by an Octave script by D. Caron, C. Di Gesare)
-# File: ProcessNDL.py
-# Description:
 
+"""
+Authors: N. Abrate (inspired by an Octave script by D. Caron, C. Di Gesare).
+
+File: ProcessNDL.py
+Description: Module for generating NJOY input files and processing ENDF-6
+             files in order to generate ACE files for Serpent and MCNP
+
+"""
 import os
 import re
 import gzip
@@ -34,9 +39,42 @@ partdict = {"n": ["neutron", "neutrons", "neutronic", "n"],
             "pn": ["gamma", "photo-nuclear", "photonuclear", "pn"]}
 
 
-def buildacelib(inpath, libpath, data, libext, particles, njoyver=2016, 
+def buildacelib(inpath, libpath, data, libext, particles, njoyver=2016,
                 atom_relax=None, np=None, copyflag=False):
+    """
+    Build the ACE library (with NJOY stream, VIEWR, XSDIR PENDF output files).
 
+    Parameters
+    ----------
+    inpath : string
+        absolute path of NJOY input files location
+    libpath : string
+        absolute path of nuclear data library
+    data : string
+        sub-dir name inside "libpath" containing ENDF-6 files to be processed
+    libext : string
+        ENDF-6 file extension (e.g. ".jeff", ".tendl", ".endf")
+    particles : string
+        kind of incident-particle data defined in "partdict"
+        (e.g. "n", "photo-atomic")
+    njoyver : string, optional
+        NJOY version number (only 2016 and 2021 are supported).
+        The default is 2016.
+    atom_relax : string, optional
+        Name of atomic relaxation data sub-dir inside "libpath".
+        The default is None.
+    np : int, optional
+        number of CPUs for the parallel calculation.
+        The default is None. For default values, the code takes all CPUs-2
+    copyflag : bool, optional
+        flag to copy ENDF-6 files inside temporary directories created for
+        the parallel calculation. The default is False, so the files are moved
+        each time in order to reduce the I/O burden.
+
+    Returns
+    -------
+    None.
+    """
     # define number of CPUs
     if np is None:
         np = mp.cpu_count()-2  # leave 2 free CPUs
@@ -61,7 +99,7 @@ def buildacelib(inpath, libpath, data, libext, particles, njoyver=2016,
         # define particle-wise directory paths
         outpath = os.path.join(baseoutpath, proj)
         # create "out" sub-dirs
-        outdirs = {"n": ["pendfdir_bin", "acedir", "xsdir", "njoyout", 
+        outdirs = {"n": ["pendfdir_bin", "acedir", "xsdir", "njoyout",
                          "njoyinp", "viewheatdir", "viewacedir"],
                    "pa": ["acedir", "xsdir", "njoyout", "njoyinp"],
                    "pn": ["pendfdir_bin", "acedir", "xsdir", "njoyout",
@@ -90,16 +128,16 @@ def buildacelib(inpath, libpath, data, libext, particles, njoyver=2016,
             for k, group in inpfilegroups.items():
                 print("Processing nuclides at %s K..." % k)
                 # define list of arguments for parallel function
-                args = [(inpath, outpath, proj, libext, libpath, data, atom_relax, 
+                args = [(inpath, outpath, proj, libext, libpath, data, atom_relax,
                          copyflag)]
                 args = list(zip(group, args*len(inpfiles)))
                 # process input with NJOY on np cores
                 pool.map(par_ace_lib, args)
-                
+
         else:  # no input grouping, not copying files
 
             # define list of arguments for parallel function
-            args = [(inpath, outpath, proj, libext, libpath, data, atom_relax, 
+            args = [(inpath, outpath, proj, libext, libpath, data, atom_relax,
                      copyflag)]
             args = list(zip(inpfiles, args*len(inpfiles)))
             # process input with NJOY on np cores
@@ -110,7 +148,21 @@ def buildacelib(inpath, libpath, data, libext, particles, njoyver=2016,
 
 
 def par_ace_lib(args):
+    """
+    Define the instructions performed independently by each processor.
 
+    Parameters
+    ----------
+    args : list
+        list of input file names to be processed and a tuple of arguments
+        that allow to pass to this function the input argument of function
+        "buildacelib" (for more information, see args of this function)
+
+    Returns
+    -------
+    None.
+
+    """
     # unpack input arguments
     f, tup = args
     inpath, outpath, proj, libext, libpath, data, atom_relax, copyflag = tup
@@ -131,19 +183,19 @@ def par_ace_lib(args):
         else:
             endfname = fname
         # move ENDF-6 files in input dir
-        sh.move(os.path.join(libpath, data, endfname), 
+        sh.move(os.path.join(libpath, data, endfname),
                 os.path.join(tmpath, "tape20"))
-        
+
         # move atomic relaxation ENDF-6 files in input dir
         if proj == "pa":
-            sh.move(os.path.join(libpath, atom_relax, endfname), 
-                os.path.join(tmpath, "tape21"))
-        
+            sh.move(os.path.join(libpath, atom_relax, endfname),
+                    os.path.join(tmpath, "tape21"))
+
         # run NJOY, then clean directory
         start_time = t.time()
         print("Processing %s..." % f.split(".")[0])
         run_njoy(os.path.join(inpath, proj, f), njoyver=2016)
-        move_and_clean(f, outpath, tmpath, libpath, data, endfname, proj, 
+        move_and_clean(f, outpath, tmpath, libpath, data, endfname, proj,
                        atom_relax)
         print("DONE")
 
@@ -152,14 +204,41 @@ def par_ace_lib(args):
 
 
 def move_and_clean(inp, path, tmpath, libpath, data, endfname, proj, atom_relax=None):
+    """
+    Move and clean output files in temporary directory.
 
+    Parameters
+    ----------
+    inp : string
+        NJOY input file name.
+    path : string
+        output directory path.
+    tmpath : string
+        path of the temporary working directory.
+    libpath : string
+        ENDF-6 file library path.
+    data : string
+        sub-dir name inside "libpath" containing ENDF-6 files to be processed.
+    endfname : string
+        name of the ENDF-6 file to be moved in the library directory.
+    proj : string
+        kind of incident particle (e.g. "n", "pa", "pn").
+    atom_relax : string, optional
+        Name of atomic relaxation data sub-dir inside "libpath".
+        The default is None.
+
+    Returns
+    -------
+    None.
+
+    """
     # split input name
     ZAIDT, ext = os.path.splitext(inp)
     datapath = os.path.join(libpath, data)
     if atom_relax is not None:
         atom_relax_datapath = os.path.join(libpath, atom_relax)
     else:
-        atom_relax_datapath=None
+        atom_relax_datapath = None
 
     # define common dictionaries
     # neutrons dict with names of files to be kept when cleaning files
@@ -167,12 +246,12 @@ def move_and_clean(inp, path, tmpath, libpath, data, endfname, proj, atom_relax=
                        "tape29", "xsdir": "tape30_1", "njoyout": "out.gz",
                        "viewheatdir": "tape35", "viewacedir": "tape34",
                        "njoyinp": inp},
-                "pa": {datapath: "tape20", atom_relax_datapath: "tape21",
-                       "acedir": "tape29", "xsdir": "tape30_1", 
-                       "njoyout": "out.gz", "njoyinp": inp},
-                "pn": {datapath: "tape20", "pendfdir_bin": "tape22", "acedir":
-                       "tape29", "xsdir": "tape30_1", "njoyout": "out.gz",
-                       "viewacedir": "tape34", "njoyinp": inp}}
+                 "pa": {datapath: "tape20", atom_relax_datapath: "tape21",
+                        "acedir": "tape29", "xsdir": "tape30_1",
+                        "njoyout": "out.gz", "njoyinp": inp},
+                 "pn": {datapath: "tape20", "pendfdir_bin": "tape22", "acedir":
+                        "tape29", "xsdir": "tape30_1", "njoyout": "out.gz",
+                        "viewacedir": "tape34", "njoyinp": inp}}
 
     # neutrons dict with new names when moving files
     ext_names = {"n": {"tape20": endfname, "tape21": endfname,
@@ -184,11 +263,11 @@ def move_and_clean(inp, path, tmpath, libpath, data, endfname, proj, atom_relax=
                         "out.gz": ".out.gz", inp: ".njoyinp"},
                  "pn": {"tape20": endfname, "tape22": ".pendf",
                         "tape29": ".ace", "tape30_1": ".xsdir",
-                        "out.gz": ".out.gz", "tape34": ".eps", 
+                        "out.gz": ".out.gz", "tape34": ".eps",
                         inp: ".njoyinp"}}
 
     # edit xsdir default content
-    find_replace = {"filename": ZAIDT+".ace", "route": "0"} 
+    find_replace = {"filename": ZAIDT+".ace", "route": "0"}
     with open("tape30") as fold:
         with open("tape30_1", "w") as fnew:
             for line in fold:
@@ -223,6 +302,29 @@ def move_and_clean(inp, path, tmpath, libpath, data, endfname, proj, atom_relax=
 
 
 def run_njoy(inp, njoyver=2016):
+    """
+    Execute the Linux system command to run NJOY.
+
+    NJOY must be correctly installed and should properly work on the machine OS
+    Parameters
+    ----------
+    inp : string
+        NJOY input file name with absolute path
+        (e.g. "/home/user/njoyinput/H-001.njoyinp")
+    njoyver : int, optional
+        NJOY version number (only 2016 and 2021 are supported).
+        The default is 2016.
+
+    Raises
+    ------
+    OSError
+        The specified NJOY version is not available.
+
+    Returns
+    -------
+    None.
+
+    """
     # split input name
     fname, ext = os.path.splitext(inp)
     # run NJOY in the system
@@ -241,11 +343,49 @@ def run_njoy(inp, njoyver=2016):
 
 def makeinput(datapath, pattern, part, libname, broad_temp=None, outpath=None,
               atomrelax_datapath=None, njoyver=2016):
+    """
+    Write the NJOY input to files for future processing.
 
-    # FIXME try glob module to simplify these lines
+    Parameters
+    ----------
+    datapath : string
+        ENDF-6 files absolute path.
+    pattern : string
+        string describing the file name pattern (e.g. n-Z_AS_A.endf, where Z
+        is a keyword for atomic number, AS a keyword for the atomic symbol
+        and A a keyword for the mass number.)
+    part : string
+        incident particle for the desired nuclear data (e.g. "n" or "neutron",
+        "pa" or "photo-atomic", and so on...)
+    libname : string
+        complete library name (e.g. "ENDF-B/VII.1")
+    broad_temp : list of int, optional
+        List with integer values of temperatures [K] for Doppler broadening.
+        The default is None.
+    outpath : string, optional
+        path where output files produced by this function (i.e. NJOY input
+        files) are stored. The default is None. In this case, the output is
+        stored in the working directory.
+    atomrelax_datapath : string, optional
+        path with atomic relaxation data for photo-atomic data.
+        The default is None.
+    njoyver : string, optional
+        NJOY version number (only 2016 and 2021 are supported).
+        The default is 2016.
+
+    Raises
+    ------
+    OSError
+        -Atomic relaxation data path not provided for photo-atomic processing
+        -ENDF-6 file names does not contain explicit Z or atomic symbol
+        -ENDF-6 file names does not contain explicit mass number
+    Returns
+    -------
+    None.
+    """
     # find pattern separators
     pattern, lib_extension = os.path.splitext(pattern)
-    filesep = re.split(r"[ A Z AS]+", pattern)
+    filesep = re.split(r"[ A Z S]+", pattern)
     # join for using re.split later
     filesep = "|".join(filesep)
     # add escape character "\" in front of special character "-", if any
@@ -254,32 +394,48 @@ def makeinput(datapath, pattern, part, libname, broad_temp=None, outpath=None,
     keys = re.split(r"["+filesep+"]+", pattern)
     # squeeze out empty strings, if any
     keys = list(filter(None, keys))
+
+    # check minimum split has been done or act otherwise
+    len_keys = [len(k) for k in keys]
+    if max(len_keys) > 1:
+        # split each key checking its length
+        newkeys = []
+        for k in keys:
+            if len(k) > 1:
+                k = list(filter(None, re.split("", k)))
+                newkeys.extend(k)
+            else:
+                newkeys.append(k)
+        # define new keys
+        keys = newkeys
+
     # make dictionary to identify keys position in filename
     patterndict = {s: ipos for ipos, s in enumerate(keys)}
+
     # replace A, AS and Z (if present) with \w+ for regex later use
-    str_iterator = re.finditer(r"[A Z AS]+", pattern)
+    str_iterator = re.finditer(r"[A Z S]+", pattern)
     str_pos = [val.span() for val in str_iterator]
     min_pos = min(str_pos, key=itemgetter(0))[0]
     max_pos = max(str_pos, key=itemgetter(1))[1]
     pattern = pattern[min_pos:max_pos]
     # store separator between AS, Z and A
-    filesep = list(filter(None, re.split(r"[ A Z AS]+", pattern)))
+    filesep = list(filter(None, re.split(r"[ A Z S]+", pattern)))
     # join for using re.split later
     filesep = "|".join(filesep)
     # replace A, AS and Z (if present) with \w+ for regex later use
-    pattern = pattern.replace("Z", "\w+").replace("AS", "\w+").replace("A",
-                                                                        "\w+")
+    pattern = pattern.replace("Z", "\\d+").replace("S", "\\w+").replace("A", "\\d+")
     # define general pattern
     pattern = re.compile(pattern)
+
     # gather all files in datapath
     endfiles = [f for f in sorted(os.listdir(datapath))
                 if isfile(join(datapath, f))
                 if f.endswith(lib_extension)]
-    
+
     # print warning for the user
     if endfiles == []:
         print("Warning: %s is empty!" % datapath)
-            
+
     # define particle key
     for key, names in partdict.items():
         if part in names:
@@ -302,17 +458,24 @@ def makeinput(datapath, pattern, part, libname, broad_temp=None, outpath=None,
 
         # split extension
         nuclname, lib_extension = os.path.splitext(endf)
+        # check if nuclide is metastable
+        if re.search("([0-9]+)m", nuclname) is not None:
+            metaflag = 1  # initial value of flag for metastable elements
+        else:
+            metaflag = None  # initial value of flag for metastable elements
+
         # split according to separators
         iS, iE = re.search(pattern, endf).span()
         nuclname = nuclname[iS:iE]
         if filesep != '':
             keys = re.split(r"["+filesep+"]+", nuclname)
         else:
-            keys = [nuclname]
+            keys = list(filter(None, re.split("(\\d+)", nuclname)))
+
         # get atomic number Z and atomic symbol AS
         try:  # name contains atomic symbol explicitly
             # get atomic symbol
-            AS = keys[patterndict["AS"]]  # get position with dict val
+            AS = keys[patterndict["S"]]  # get position with dict val
             # get atomic number
             try:
                 Z = ASZ_periodic_table()[AS]
@@ -333,21 +496,22 @@ def makeinput(datapath, pattern, part, libname, broad_temp=None, outpath=None,
                 AS = ""  # if AS is not inside the dict, dummy value for AS
                 Z = -1  # if AS is not inside the dict, dummy value for AS
 
-        metaflag = 0
-        # get mass number A
+        # neutron or photo-nuclear data
         if Z != -1 and (proj == "n" or proj == "pn"):
+
+            # get mass number A
             try:
                 A = keys[patterndict["A"]]
                 # check if nuclide is metastable
                 try:
                     int(A)
-                    # metastable element flag
-                    metaflag = None
+                    # # metastable element flag
+                    # metaflag = None
                 except ValueError:
                     # look for "m" char (metastable nuclide)
                     A = A.split("m")[0]
-                    # metastable element flag
-                    metaflag = 1
+                    # # metastable element flag
+                    # metaflag = 1
             except KeyError:
                 raise OSError("ENDF-6 filename should contain mass number!")
 
@@ -360,7 +524,7 @@ def makeinput(datapath, pattern, part, libname, broad_temp=None, outpath=None,
             ZAID = str(Z)+A
             if metaflag == 1:
                 ZAID = str(int(ZAID)+100)
-        
+
             # parse MAT number from library file
             endf = os.path.join(datapath, endf)
             fp = open(endf)
@@ -379,8 +543,8 @@ def makeinput(datapath, pattern, part, libname, broad_temp=None, outpath=None,
                 # print message for the user
                 print("Building input file for %s at T=%s K..." % (endf, tmp))
                 # define file content
-                njoyinp = build_njoy_deck(ZAID, ASA, MAT, tmp, proj, libname, 
-                                          njoyver)
+                njoyinp = build_njoy_deck(ZAID, ASA, proj, libname, njoyver,
+                                          MAT, tmp=tmp)
                 # save file in proper directory
                 fname = ASA+"_"+"{:02d}".format(int(tmp/100))
                 # define complete path
@@ -390,19 +554,20 @@ def makeinput(datapath, pattern, part, libname, broad_temp=None, outpath=None,
                 f.write(njoyinp)
                 f.close()
                 print("DONE \n")
+
+        # photo-atomic data
         elif Z != -1 and proj == "pa":
             # rename ENDF-6 file with PoliTo nomenclature
             endf = os.path.join(datapath, endf)
             sh.move(endf, os.path.join(datapath, AS+lib_extension))
-            
+
             # rename also atomic relaxation ENDF-6 files
             ar_endf = os.path.join(atomrelax_datapath, ar_endfiles[ifile])
             sh.move(ar_endf, os.path.join(atomrelax_datapath, AS+lib_extension))
             # print message for the user
             print("Building input file for %s..." % (endf))
             # define file content
-            njoyinp = build_njoy_deck(str(Z), AS, None, None, proj, libname, 
-                                      njoyver)
+            njoyinp = build_njoy_deck(str(Z), AS, proj, libname, njoyver)
             # save file in proper directory
             fname = AS+"_00"
             # define complete path
@@ -414,14 +579,43 @@ def makeinput(datapath, pattern, part, libname, broad_temp=None, outpath=None,
             print("DONE \n")
         else:  # dummy value of Z means fake element
             print("Skipping %s-%s. It is not an element." % (AS, Z))
-  
-    
-def build_njoy_deck(elem, ASA, MAT, tmp, proj, libname, vers):
+
+
+def build_njoy_deck(elem, ASA, proj, libname, vers, MAT=None, tmp=None):
+    """
+    Build the NJOY deck for processing.
+
+    Parameters
+    ----------
+    elem : string
+        Z, atomic number.
+    ASA : string
+        Atomic symbol.
+    proj : string
+        incident particle for the desired data (e.g. "n", "pa", "pn").
+    libname : string
+        complete library name (e.g. "ENDF-B/VII.1")
+    njoyver : string, optional
+        NJOY version number (only 2016 and 2021 are supported).
+        The default is 2016.
+    MAT : string
+        MAT number describing the nuclide inside the ENDF-6 file.
+        It is read from the file itself (user should not provide it).
+        The default is None.
+    tmp : int
+        Temperature for Doppler broadening. The default is None.
+
+    Returns
+    -------
+    outstr : string
+        string that is passed to master function in order to write the NJOY
+        input file
+    """
     # list preallocation
     lst = []
     lstapp = lst.append
     # define temperature suffix
-    if tmp is not None: 
+    if tmp is not None:
         tmpsuff = "{:02d}".format(int(tmp/100))
     # save datetime
     now = datetime.now()
@@ -483,7 +677,6 @@ def build_njoy_deck(elem, ASA, MAT, tmp, proj, libname, vers):
         lstapp("viewr")
         lstapp("40 35/")  # plot HEATR output
 
-
     elif proj == "pa":  # photo-atomic data
         elem = elem+"00"
         # ACER module
@@ -531,6 +724,15 @@ def build_njoy_deck(elem, ASA, MAT, tmp, proj, libname, vers):
 
 
 def ASZ_periodic_table():
+    """
+    Define a dictionary with atomic symbol and atomic number.
+
+    Returns
+    -------
+    periodictable : dict
+        key: atomic symbol AS.
+        value: atomic number Z.
+    """
     # define atomic symbols list
     AS = ['H', 'He', 'Li', 'Be', 'B', 'C', 'N', 'O', 'F', 'Ne', 'Na', 'Mg',
           'Al', 'Si', 'P', 'S', 'Cl', 'Ar', 'K', 'Ca', 'Sc', 'Ti', 'V', 'Cr',
@@ -552,6 +754,15 @@ def ASZ_periodic_table():
 
 
 def ZAS_periodic_table():
+    """
+    Define a dictionary with atomic number and atomic symbol.
+
+    Returns
+    -------
+    periodictable : dict
+        key: atomic number Z.
+        value: atomic symbol AS.
+    """
     # define atomic symbols list
     AS = ['H', 'He', 'Li', 'Be', 'B', 'C', 'N', 'O', 'F', 'Ne', 'Na', 'Mg',
           'Al', 'Si', 'P', 'S', 'Cl', 'Ar', 'K', 'Ca', 'Sc', 'Ti', 'V', 'Cr',
@@ -573,7 +784,20 @@ def ZAS_periodic_table():
 
 
 def mkdir(dirname, path):
+    """
+    Make a new directory named dirname inside path.
 
+    Parameters
+    ----------
+    dirname : string
+        directory name
+    path : string
+        path where the new directory is created.
+
+    Returns
+    -------
+    None.
+    """
     if path is None:
         path = dirname
     else:
@@ -583,7 +807,19 @@ def mkdir(dirname, path):
 
 
 def printime(start_time):
+    """
+    Print the elapsed time in s/m/h.
 
+    Parameters
+    ----------
+    start_time : float
+        initial time.
+
+    Returns
+    -------
+    None.
+
+    """
     dt = t.time() - start_time
     if dt < 60:
         print("Elapsed time %f s." % dt)
@@ -591,4 +827,3 @@ def printime(start_time):
         print("Elapsed time %f m." % (dt/60))
     elif dt >= 3600:
         print("Elapsed time %f h." % (dt/3600))
-  
