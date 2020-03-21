@@ -30,6 +30,7 @@ from datetime import datetime
 from socket import gethostname
 from operator import itemgetter
 from os.path import isfile, join
+from subprocess import Popen, PIPE
 
 
 # define particles synonims dict
@@ -193,14 +194,32 @@ def par_ace_lib(args):
 
         # run NJOY, then clean directory
         start_time = t.time()
-        print("Processing %s..." % f.split(".")[0])
-        run_njoy(os.path.join(inpath, proj, f), njoyver=2016)
-        move_and_clean(f, outpath, tmpath, libpath, data, endfname, proj,
-                       atom_relax)
-        print("DONE")
+        # run NJOY
+        outstream = run_njoy(os.path.join(inpath, proj, f), njoyver=2016)
+        # move files and clean
+        success = move_and_clean(f, outpath, tmpath, libpath, data, endfname, proj,
+                                 atom_relax)
 
-        # print elapsed time
-        printime(start_time)
+        # print diagnostics to the user
+        if success is True:
+            with open(os.path.join(outpath, 'COMPLETED.txt'), 'a') as compl:
+                compl.write("%s processing COMPLETED. %s s \n"
+                            % (f.split(".")[0], printime(start_time)))
+        else:
+            with open(os.path.join(outpath, 'FAILED.txt'), 'a') as fail:
+                fail.write("%s processing FAILED. %s s \n"
+                           % (f.split(".")[0], printime(start_time)))
+
+        # print to file warnings and error messages
+        if outstream is not None:
+            if outstream == "warning":
+                with open(os.path.join(outpath, 'WARNINGS.txt'), 'a') as warn:
+                    warn.write("-------------- %s -------------- \n" % f)
+                    warn.write("Consistency problems found in acer running %s \n" % f)
+            else:
+                with open(os.path.join(outpath, 'ERRORS.txt'), 'a') as fail:
+                    fail.write("-------------- %s -------------- \n" % f)
+                    fail.write(outstream+'\n')
 
 
 def move_and_clean(inp, path, tmpath, libpath, data, endfname, proj, atom_relax=None):
@@ -229,9 +248,11 @@ def move_and_clean(inp, path, tmpath, libpath, data, endfname, proj, atom_relax=
 
     Returns
     -------
-    None.
-
+    success : bool
+        True if processing and cleaning is successful, False otherwise.
     """
+    # assign success value
+    success = True
     # split input name
     ZAIDT, ext = os.path.splitext(inp)
     datapath = os.path.join(libpath, data)
@@ -267,31 +288,47 @@ def move_and_clean(inp, path, tmpath, libpath, data, endfname, proj, atom_relax=
                         inp: ".njoyinp"}}
 
     # edit xsdir default content
-    find_replace = {"filename": ZAIDT+".ace", "route": "0"}
-    with open("tape30") as fold:
-        with open("tape30_1", "w") as fnew:
-            for line in fold:
-                for key in find_replace:
-                    # replace if key is in file line
-                    if key in line:
-                        line = line.replace(key, find_replace[key])
-                # write new line in new file
-                fnew.write(line)
+    try:
+        find_replace = {"filename": ZAIDT+".ace", "route": "0"}
+        with open("tape30") as fold:
+            with open("tape30_1", "w") as fnew:
+                for line in fold:
+                    for key in find_replace:
+                        # replace if key is in file line
+                        if key in line:
+                            line = line.replace(key, find_replace[key])
+                    # write new line in new file
+                    fnew.write(line)
+    except FileNotFoundError:
+        success = False
 
     # loop over dictionaries
     for dirname, fname in dir_names[proj].items():
         # other files in "out" tree
-        if fname != "tape20" and fname != "tape21":
+        if fname == "out.gz":
+            # read output file
+            with open('output', 'rb') as f_in:
+                with gzip.open('out.gz', 'wb') as f_out:
+                    sh.copyfileobj(f_in, f_out)
+            # define I/O path
             ipath = os.path.join(tmpath, fname)
             opath = os.path.join(path, dirname, ZAIDT+ext_names[proj][fname])
-            # move and rename file
-            sh.move(ipath, opath)
-        # ENDF-6 back to data directory
+
+        elif fname != "tape20" and fname != "tape21":
+            # ENDF-6 back to data directory
+            ipath = os.path.join(tmpath, fname)
+            opath = os.path.join(path, dirname, ZAIDT+ext_names[proj][fname])
+
         else:
             # ENDF-6 back to data dir
             ipath = os.path.join(tmpath, fname)
             opath = os.path.join(dirname, ext_names[proj][fname])
+
+        try:
+            # move and rename file
             sh.move(ipath, opath)
+        except FileNotFoundError:
+            success = False
 
     # clean base directory from other NJOY tapes
     f_del = glob.glob(os.path.join(tmpath, "tape*"))
@@ -299,6 +336,8 @@ def move_and_clean(inp, path, tmpath, libpath, data, endfname, proj, atom_relax=
         os.remove(f)
     # remove output file
     os.remove("output")
+
+    return success
 
 
 def run_njoy(inp, njoyver=2016):
@@ -318,27 +357,44 @@ def run_njoy(inp, njoyver=2016):
     Raises
     ------
     OSError
-        The specified NJOY version is not available.
+        -The specified NJOY version is not available.
 
     Returns
     -------
-    None.
-
+    outstream: string or None
+        NJOY output stream. If no error occurs, outstream is None.
     """
     # split input name
     fname, ext = os.path.splitext(inp)
-    # run NJOY in the system
+
+    # define NJOY command
     if njoyver == 2016:
-        stream = os.popen('njoy2016 < %s' % inp).read()
+        cmd = 'njoy2016 < %s' % inp
     elif njoyver == 2021:
-        stream = os.popen('njoy2021 -i %s' % inp).read()
+        cmd = 'njoy21 -i %s' % inp
     else:
         print("The specified NJOY version is not available.")
         raise OSError
 
-    # compress output stream
-    with gzip.GzipFile("out.gz", mode='w') as fgz:
-        fgz.write(stream.encode())
+    # execute NJOY in the shell
+    p = Popen(cmd, shell=True, stdout=PIPE, stderr=PIPE, close_fds=True)
+    stream, stream_stderr = p.communicate()
+    # decode in UTF-8
+    stream, stream_stderr = stream.decode('utf-8'), stream_stderr.decode('utf-8')
+
+    # check presence of warnings in stream
+    warn_msg = "---message from consis---consistency problems found"
+
+    # define outstream
+    if stream_stderr != '':
+        outstream = stream_stderr
+    else:
+        if re.search(warn_msg, stream) is not None:
+            outstream = "warning"
+        else:
+            outstream = None
+
+    return outstream
 
 
 def makeinput(datapath, pattern, part, libname, broad_temp=None, outpath=None,
@@ -630,11 +686,11 @@ def build_njoy_deck(elem, ASA, proj, libname, vers, MAT=None, tmp=None):
         # RECONR module
         lstapp("reconr")
         lstapp("-21 -22/")
-        lstapp("/")
+        lstapp("''/")
         lstapp("%s 2/" % MAT)
         lstapp("0.01 0.0 0.01 5.0e-7/")
-        lstapp("/")
-        lstapp("/")
+        lstapp("''/")
+        lstapp("''/")
         lstapp("0/")
         # BROADR module
         lstapp("broadr")
@@ -670,7 +726,7 @@ def build_njoy_deck(elem, ASA, proj, libname, vers, MAT=None, tmp=None):
         lstapp("acer")  # re-run for QA checks
         lstapp("0 27 33 29 30/")
         lstapp("7 1 1 .%s/" % tmpsuff)
-        lstapp("/")
+        lstapp("''/")
         # VIEWR module
         lstapp("viewr")
         lstapp("33 34/")  # plot ACER output
@@ -817,13 +873,15 @@ def printime(start_time):
 
     Returns
     -------
-    None.
-
+    elaps : string
+        Elapsed time
     """
     dt = t.time() - start_time
     if dt < 60:
-        print("Elapsed time %f s." % dt)
+        elaps = "Elapsed time %f s." % dt
     elif dt >= 60:
-        print("Elapsed time %f m." % (dt/60))
+        elaps = "Elapsed time %f m." % (dt/60)
     elif dt >= 3600:
-        print("Elapsed time %f h." % (dt/3600))
+        elaps = "Elapsed time %f h." % (dt/3600)
+
+    return elaps
