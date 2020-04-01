@@ -800,6 +800,106 @@ def build_njoy_deck(elem, ASA, proj, libname, vers, MAT=None, tmp=None):
     return outstr
 
 
+def convertxsdir(datapath, proj, libname, ndlpath, currpath=None):
+    '''
+    Merge all .xsdir files and convert to .xsdata file.
+
+    Parameters
+    ----------
+    datapath : str
+        Path where .xsdir are located.
+    proj : list[str]
+        Incident particle.
+    libname : str
+        Library name.
+    ndlpath : str
+        Library path.
+    currpath : str, optional
+        Current working directory path. The default is None.
+
+    Returns
+    -------
+    None.
+
+    '''
+    if currpath is None:
+        pwd = os.getcwd()
+    else:
+        pwd = currpath
+    # loop over projectiles
+    for p in proj:
+        # define paths
+        datastr = "datapath=%s" % "/".join([ndlpath, p])
+        fname = 'sss2_%s_%s.xsdir' % (libname, p)
+        fname = os.path.join(pwd, fname)
+        xsdirpath = os.path.join(datapath, p, "xsdir")
+        # insert datapath in xsdir_header
+        headname = os.path.join(pwd, 'xsdir_header')
+        header = _insert_top_lines_str(datastr, headname)
+
+        # collect .xsdir files
+        xsdirfiles = [os.path.join(xsdirpath, f) for f in
+                      sorted(os.listdir(xsdirpath))
+                      if isfile(os.path.join(xsdirpath, f))
+                      if f.endswith(".xsdir")]
+        # merge .xsdir files
+        _mergefiles(fname, xsdirfiles)
+
+        # insert header on top of merged .xsdir files
+        xsdirlines = _insert_top_lines_str(header, fname)
+        with open(fname, 'w') as f:
+            f.write(xsdirlines)
+
+        # run xsdirconvert.pl utility (by VTT)
+        xsdataname = 'sss2_%s_%s.xsdata' % (libname, p)
+        cmd = "./xsdirconvert.pl %s > %s" % (fname, xsdataname)
+        p = Popen(cmd, shell=True, stdout=PIPE, stderr=PIPE, close_fds=True)
+        stream, stream_stderr = p.communicate()
+        # decode in UTF-8
+        stream, stream_stderr = stream.decode('utf-8'), stream_stderr.decode('utf-8')
+        # print shell output
+        print("/n".join([stream, stream_stderr]))
+
+    # merge projectiles files
+    xsdatalist = [os.path.join(pwd, f) for f in sorted(os.listdir(pwd))
+                  if isfile(os.path.join(pwd, f))
+                  if f.endswith(".xsdata")]
+    xsdirlist = [os.path.join(pwd, f) for f in sorted(os.listdir(pwd))
+                 if isfile(os.path.join(pwd, f))
+                 if f.endswith(".xsdir")]
+    xsdatafname = 'sss2_%s.xsdata' % libname
+    xsdirfname = 'sss2_%s.xsdir' % libname
+    _mergefiles(xsdatafname, xsdatalist)
+    _mergefiles(xsdirfname, xsdirlist)
+    p1 = os.path.join(pwd, xsdatafname)
+    p2 = os.path.join(ndlpath, xsdatafname)
+    sh.move(p1, p2)
+    p1 = os.path.join(pwd, xsdirfname)
+    p2 = os.path.join(ndlpath, xsdirfname)
+    sh.move(p1, p2)
+
+    # move and clean files
+    f_del = glob.glob(os.path.join(pwd, "*.xs*"))
+    for f in f_del:
+        os.remove(f)
+
+
+def _insert_top_lines_str(datastr, fname):
+    # read header file content
+    with open(fname, 'r') as fh:
+        temp = fh.read()
+    # append file lines to string
+    newstr = "\n".join([datastr, temp])
+    return newstr
+
+
+def _mergefiles(fname, filelist):
+    with open(fname, 'w') as wfd:
+        for f in filelist:
+            with open(f, 'r') as fd:
+                sh.copyfileobj(fd, wfd)
+
+
 def ASZ_periodic_table():
     """
     Define a dictionary with atomic symbol and atomic number.
