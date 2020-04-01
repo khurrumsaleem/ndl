@@ -119,6 +119,7 @@ def buildacelib(inpath, libpath, data, libext, particles, njoyver=2016,
 
         # process library with NJOY
         if copyflag is False and (proj == "n" or proj == "pn"):
+
             # divide inpfiles according to suffix
             inpfilegroups = {}
             for k, v in groupby(inpfiles, lambda s: s.split('_')[1]):
@@ -167,6 +168,7 @@ def par_ace_lib(args):
     # unpack input arguments
     f, tup = args
     inpath, outpath, proj, libext, libpath, data, atom_relax, copyflag = tup
+
     # create temporary directories in outpath to avoid mixing NJOY output
     with tempfile.TemporaryDirectory(dir=outpath) as tmpath:
 
@@ -183,9 +185,17 @@ def par_ace_lib(args):
             endfname = fname+"."+libext
         else:
             endfname = fname
+
         # move ENDF-6 files in input dir
-        sh.move(os.path.join(libpath, data, endfname),
-                os.path.join(tmpath, "tape20"))
+        try:
+            if copyflag is False:
+                sh.move(os.path.join(libpath, data, endfname),
+                        os.path.join(tmpath, "tape20"))
+            else:
+                sh.copyfile(os.path.join(libpath, data, endfname),
+                            os.path.join(tmpath, "tape20"))
+        except FileNotFoundError:
+            print("File %s does not exist!" % os.path.join(libpath, data, endfname))
 
         # move atomic relaxation ENDF-6 files in input dir
         if proj == "pa":
@@ -203,11 +213,11 @@ def par_ace_lib(args):
         # print diagnostics to the user
         if success is True:
             with open(os.path.join(outpath, 'COMPLETED.txt'), 'a') as compl:
-                compl.write("%s processing COMPLETED. %s s \n"
+                compl.write("%s processing COMPLETED. %s \n"
                             % (f.split(".")[0], printime(start_time)))
         else:
             with open(os.path.join(outpath, 'FAILED.txt'), 'a') as fail:
-                fail.write("%s processing FAILED. %s s \n"
+                fail.write("%s processing FAILED. %s \n"
                            % (f.split(".")[0], printime(start_time)))
 
         # print to file warnings and error messages
@@ -613,8 +623,20 @@ def makeinput(datapath, pattern, part, libname, broad_temp=None, outpath=None,
 
         # photo-atomic data
         elif Z != -1 and proj == "pa":
-            # rename ENDF-6 file with PoliTo nomenclature
             endf = os.path.join(datapath, endf)
+
+            # parse MAT number from library file
+            endf = os.path.join(datapath, endf)
+            fp = open(endf)
+            for iline, line in enumerate(fp):
+                if iline == 2:
+                    # read MAT number inside ENDF-6 format file
+                    MAT = line[66:70]
+                elif iline > 2:
+                    break
+            fp.close()
+
+            # rename ENDF-6 file with PoliTo nomenclature
             sh.move(endf, os.path.join(datapath, AS+lib_extension))
 
             # rename also atomic relaxation ENDF-6 files
@@ -623,7 +645,7 @@ def makeinput(datapath, pattern, part, libname, broad_temp=None, outpath=None,
             # print message for the user
             print("Building input file for %s..." % (endf))
             # define file content
-            njoyinp = build_njoy_deck(str(Z), AS, proj, libname, njoyver)
+            njoyinp = build_njoy_deck(MAT, AS, proj, libname, njoyver)
             # save file in proper directory
             fname = AS+"_00"
             # define complete path
@@ -734,7 +756,6 @@ def build_njoy_deck(elem, ASA, proj, libname, vers, MAT=None, tmp=None):
         lstapp("40 35/")  # plot HEATR output
 
     elif proj == "pa":  # photo-atomic data
-        elem = elem+"00"
         # ACER module
         lstapp("acer")
         lstapp("20 21 0 29 30/")
