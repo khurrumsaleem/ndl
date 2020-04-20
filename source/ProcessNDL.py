@@ -21,11 +21,11 @@ import re
 import gzip
 import glob
 import tempfile
+import fileinput
 import time as t
 import numpy as np
 import shutil as sh
 import multiprocessing as mp
-from itertools import groupby
 from datetime import datetime
 from socket import gethostname
 from operator import itemgetter
@@ -39,9 +39,12 @@ partdict = {"n": ["neutron", "neutrons", "neutronic", "n"],
                    "pa"],
             "pn": ["gamma", "photo-nuclear", "photonuclear", "pn"]}
 
+# define particles ACE type
+pdict = {"n": "c", "pa": "p", "pn": "g"}
+
 
 def buildacelib(inpath, libpath, data, libext, particles, njoyver=2016,
-                atom_relax=None, np=None, copyflag=False):
+                atom_relax=None, np=None, copyflag=True):
     """
     Build the ACE library (with NJOY stream, VIEWR, XSDIR PENDF output files).
 
@@ -109,43 +112,36 @@ def buildacelib(inpath, libpath, data, libext, particles, njoyver=2016,
         [mkdir(name, outpath) for name in outdirs[proj]]
 
         # gather input files
-        inpfiles = [f for f in sorted(os.listdir(os.path.join(inpath, proj)))
-                    if isfile(join(inpath, proj, f))
+        allfiles = sorted(os.listdir(os.path.join(inpath, proj)))
+        inpfiles = [f for f in allfiles if isfile(join(inpath, proj, f))
                     if f.endswith(".njoyinp")]
+
+        # create KERMA input files list consistently
+        inpfilesK = [None]*len(inpfiles)
+        for ipos, f in enumerate(inpfiles):
+            name, ext = f.split(".")
+            kname = '%s.njoyinpK' % name
+
+            if isfile(join(inpath, proj, kname)):
+                inpfilesK[ipos] = kname
 
         # print warning for the user
         if inpfiles == []:
-            print("Warning: %s is empty!" % os.path.join(inpath, proj))
+            raise OSError("Warning: %s is empty!" % os.path.join(inpath, proj))
 
+        if None in inpfilesK and proj == "n":
+            print("Warning: some KERMA files are missing for %s!" % os.path.join(inpath,
+                                                                                 proj))
         # process library with NJOY
-        if copyflag is False and (proj == "n" or proj == "pn"):
 
-            # divide inpfiles according to suffix
-            inpfilegroups = {}
-            for k, v in groupby(inpfiles, lambda s: s.split('_')[1]):
-                k = str(int(k.split('.')[0])*100)
-                inpfilegroups.setdefault(k, []).extend(v)
+        # define list of arguments for parallel function
+        args = [(inpath, outpath, proj, libext, libpath, data, atom_relax,
+                 copyflag, njoyver)]
+        args = list(zip(inpfiles, inpfilesK, args*len(inpfiles)))
 
-            # serial on groups, parallel on nuclides
-            for k, group in inpfilegroups.items():
-                print("Processing nuclides at %s K..." % k)
-                # define list of arguments for parallel function
-                args = [(inpath, outpath, proj, libext, libpath, data, atom_relax,
-                         copyflag)]
-                args = list(zip(group, args*len(inpfiles)))
-                # process input with NJOY on np cores
-                pool.map(par_ace_lib, args)
+        # process input with NJOY on np cores
+        pool.map(par_ace_lib, args)
 
-        else:  # no input grouping, not copying files
-
-            # define list of arguments for parallel function
-            args = [(inpath, outpath, proj, libext, libpath, data, atom_relax,
-                     copyflag)]
-            args = list(zip(inpfiles, args*len(inpfiles)))
-            # process input with NJOY on np cores
-            pool.map(par_ace_lib, args)
-
-        # final message for the user
         print("The processed library is stored in %s" % outpath)
 
 
@@ -166,18 +162,18 @@ def par_ace_lib(args):
 
     """
     # unpack input arguments
-    f, tup = args
-    inpath, outpath, proj, libext, libpath, data, atom_relax, copyflag = tup
+    f, fK, tup = args
+    inpath, outpath, proj, libext, libpath, data, atom_relax, copyflag, njoyver = tup
 
     # create temporary directories in outpath to avoid mixing NJOY output
     with tempfile.TemporaryDirectory(dir=outpath) as tmpath:
 
-        # work in temporary directory
         os.chdir(tmpath)
-        # copy input file in working dir
         sh.copyfile(os.path.join(inpath, proj, f), os.path.join(tmpath, f))
 
-        # define file names
+        if fK is not None:
+            sh.copyfile(os.path.join(inpath, proj, fK), os.path.join(tmpath, fK))
+
         fname_tmp, ext = os.path.splitext(f)
         fname, tmp = fname_tmp.split("_")
 
@@ -188,12 +184,16 @@ def par_ace_lib(args):
 
         # move ENDF-6 files in input dir
         try:
+
             if copyflag is False:
-                sh.move(os.path.join(libpath, data, endfname),
-                        os.path.join(tmpath, "tape20"))
+                # FIXME: add symlink option
+                sh.copyfile(os.path.join(libpath, data, endfname),
+                            os.path.join(tmpath, "tape20"))
+
             else:
                 sh.copyfile(os.path.join(libpath, data, endfname),
                             os.path.join(tmpath, "tape20"))
+
         except FileNotFoundError:
             print("File %s does not exist!" % os.path.join(libpath, data, endfname))
 
@@ -204,13 +204,18 @@ def par_ace_lib(args):
 
         # run NJOY, then clean directory
         start_time = t.time()
-        # run NJOY
-        outstream = run_njoy(os.path.join(inpath, proj, f), njoyver=2016)
-        # move files and clean
-        success = move_and_clean(f, outpath, tmpath, libpath, data, endfname, proj,
-                                 atom_relax)
 
-        # print diagnostics to the user
+        outstream = run_njoy(os.path.join(inpath, proj, f), njoyver=njoyver)
+
+        outstreamK = None
+
+        if fK is not None:
+            outstreamK = run_njoy(os.path.join(inpath, proj, fK), njoyver=njoyver)
+
+        success, KERMA_warn = move_and_clean(f, fK, outpath, tmpath, libpath, data, 
+                                             endfname, proj, atom_relax)
+
+        # completed and failed
         if success is True:
             with open(os.path.join(outpath, 'COMPLETED.txt'), 'a') as compl:
                 compl.write("%s processing COMPLETED. %s \n"
@@ -220,19 +225,38 @@ def par_ace_lib(args):
                 fail.write("%s processing FAILED. %s \n"
                            % (f.split(".")[0], printime(start_time)))
 
-        # print to file warnings and error messages
+        # NJOY warning and errors
         if outstream is not None:
             if outstream == "warning":
-                with open(os.path.join(outpath, 'WARNINGS.txt'), 'a') as warn:
+                with open(os.path.join(outpath, 'WARNINGS_NJOY.txt'), 'a') as warn:
                     warn.write("-------------- %s -------------- \n" % f)
                     warn.write("Consistency problems found in acer running %s \n" % f)
             else:
-                with open(os.path.join(outpath, 'ERRORS.txt'), 'a') as fail:
+                with open(os.path.join(outpath, 'ERRORS_NJOY.txt'), 'a') as fail:
                     fail.write("-------------- %s -------------- \n" % f)
                     fail.write(outstream+'\n')
 
+        # KERMA NJOY warning and errors
+        if outstreamK is not None:
+            if outstreamK == "warning":
+                with open(os.path.join(outpath, 'WARNINGS_NJOY_KERMA.txt'), 'a') as warn:
+                    warn.write("-------------- %s -------------- \n" % f)
+                    warn.write("Consistency problems found in acer running %s \n" % f)
+            else:
+                with open(os.path.join(outpath, 'ERRORS_NJOY_KERMA.txt'), 'a') as fail:
+                    fail.write("-------------- %s -------------- \n" % f)
+                    fail.write(outstream+'\n')
 
-def move_and_clean(inp, path, tmpath, libpath, data, endfname, proj, atom_relax=None):
+        # KERMA ENDF-6 warning
+        if KERMA_warn is not None:
+            with open(os.path.join(outpath, 'WARNINGS_ENDF_KERMA.txt'), 'a') as warn:
+                warn.write("-------------- %s -------------- \n" % f)
+                warn.write("\n".join(KERMA_warn))
+                warn.write("\n")
+
+
+def move_and_clean(inp, inpK, path, tmpath, libpath, data, endfname, proj,
+                   atom_relax=None):
     """
     Move and clean output files in temporary directory.
 
@@ -240,6 +264,8 @@ def move_and_clean(inp, path, tmpath, libpath, data, endfname, proj, atom_relax=
     ----------
     inp : string
         NJOY input file name.
+    inpK : string
+        NJOY KERMA input file name.
     path : string
         output directory path.
     tmpath : string
@@ -261,22 +287,31 @@ def move_and_clean(inp, path, tmpath, libpath, data, endfname, proj, atom_relax=
     success : bool
         True if processing and cleaning is successful, False otherwise.
     """
-    # assign success value
     success = True
-    # split input name
-    ZAIDT, ext = os.path.splitext(inp)
+
+    ASAIDT, ext = os.path.splitext(inp)
+
+    ZAIDT0, MAT, natflag, iso = parseENDF6("tape20")
+    ZAIDT1 = str(int(ZAIDT0)+100*iso)
+
+    # attach temperature and ACE type extension
+    temp = ASAIDT.split('_')[1]
+    ZAIDT0 = "%s%s" % ('.'.join([ZAIDT0, temp]), pdict[proj])
+    ZAIDT1 = "%s%s" % ('.'.join([ZAIDT1, temp]), pdict[proj])
+
     datapath = os.path.join(libpath, data)
+
     if atom_relax is not None:
         atom_relax_datapath = os.path.join(libpath, atom_relax)
+
     else:
         atom_relax_datapath = None
 
-    # define common dictionaries
     # neutrons dict with names of files to be kept when cleaning files
-    dir_names = {"n": {datapath: "tape20", "pendfdir_bin": "tape26", "acedir":
-                       "tape29", "xsdir": "tape30_1", "njoyout": "out.gz",
-                       "viewheatdir": "tape35", "viewacedir": "tape34",
-                       "njoyinp": inp},
+    dir_names = {"n": {datapath: "tape20", "pendfdir_bin": ["tape26", "tape56"],
+                       "acedir": "tape29", "xsdir": "tape30_1", "njoyout": "out.gz",
+                       "viewheatdir": ["tape35", "tape60"], "viewacedir": "tape34",
+                       "njoyinp": [inp, inpK]},
                  "pa": {datapath: "tape20", atom_relax_datapath: "tape21",
                         "acedir": "tape29", "xsdir": "tape30_1",
                         "njoyout": "out.gz", "njoyinp": inp},
@@ -288,7 +323,9 @@ def move_and_clean(inp, path, tmpath, libpath, data, endfname, proj, atom_relax=
     ext_names = {"n": {"tape20": endfname, "tape21": endfname,
                        "tape26": ".pendf", "tape29": ".ace",
                        "tape30_1": ".xsdir", "out.gz": ".out.gz",
-                       "tape34": ".eps", "tape35": ".eps", inp: ".njoyinp"},
+                       "tape34": ".eps", "tape35": ".eps", inp: ".njoyinp",
+                       inpK: ".njoyinpK", "tape56": "_KERMA.pendf", "tape60":
+                       "_KERMA.eps"},
                  "pa": {"tape20": endfname, "tape21": endfname,
                         "tape29": ".ace", "tape30_1": ".xsdir",
                         "out.gz": ".out.gz", inp: ".njoyinp"},
@@ -297,57 +334,173 @@ def move_and_clean(inp, path, tmpath, libpath, data, endfname, proj, atom_relax=
                         "out.gz": ".out.gz", "tape34": ".eps",
                         inp: ".njoyinp"}}
 
-    # edit xsdir default content
     try:
-        find_replace = {"filename": ZAIDT+".ace", "route": "0"}
+
+        if proj == 'n' or proj == 'pn':
+            fiss, ures = False, False
+            warn = []
+            # fix tape29 (ACE)
+            with fileinput.FileInput("tape29", inplace=True) as tape29:
+                for iline, line in enumerate(tape29):
+
+                    if iline == 0:
+                        print(line.replace(ZAIDT0, ZAIDT1), end='')
+
+                    else:
+                        print(line, end='')
+
+                        if iline == 8:
+                            cols = line.split()
+
+                            if int(cols[1]) > 0:
+                                fiss = True
+
+                        elif iline == 10:
+                            cols = line.split()
+
+                            if int(cols[6]) > 0:
+                                ures = True
+
+            # additional MT data
+            if fiss:
+                # write MT458 data
+                count = 0
+                with open('tape29', 'a') as tape29:
+                    with open('tape20') as tape20:
+                        for iline, line in enumerate(tape20):
+                            if line[71:75] == "1458":
+                                tape29.write(line)
+                                count = count + 1
+
+                if count == 0:
+                    warn.append("Warning: no MT458 data for %s" % ZAIDT1)
+
+                # write local fission data
+                count = 0
+                with open('tape29', 'a') as tape29:
+                    with open('tape66') as tape66:
+                        for iline, line in enumerate(tape66):
+                            if line[71:75] == "3318":
+                                line = line[:71]+'3319'+line[75:]
+                                tape29.write(line)
+                                count = count + 1
+
+                if count == 0:
+                    warn.append("Warning: no local fission KERMA data for %s" % ZAIDT1)
+
+            # write non-local KERMA data
+            count = 0
+            with open('tape29', 'a') as tape29:
+                with open('tape67') as tape67:
+                    for iline, line in enumerate(tape67):
+                        if line[71:75] == "3301":
+                            tape29.write(line)
+                            count = count + 1
+
+            if count == 0:
+                warn.append("Warning: no non-local KERMA data for %s" % ZAIDT1)
+
+            if fiss:
+                # write non-local fission KERMA data
+                count = 0
+                with open('tape29', 'a') as tape29:
+                    with open('tape67') as tape67:
+                        for iline, line in enumerate(tape67):
+                            if line[71:75] == "3318":
+                                tape29.write(line)
+                                count = count + 1
+
+                if count == 0:
+                    warn.append("Warning: no non-local fission KERMA data for %s" % ZAIDT1)
+
+            # write ures data
+            if ures:
+                count = 0
+                with open('tape29', 'a') as tape29:
+                    with open('tape67') as tape67:
+                        for iline, line in enumerate(tape67):
+                            if line[71:75] == "2153":
+                                tape29.write(line)
+                                count = count + 1
+
+                if count == 0:
+                    warn.append("Warning: no additional ures data for KERMA" +
+                                " data for %s" % ZAIDT1)
+
+            if warn == []:
+                warn = None
+
+        else:
+            warn = []
+
+    except FileNotFoundError:
+        success = False
+
+    try:
+        # fix tape30 (xsdir)
+        find_replace = {ZAIDT0: ZAIDT1, "filename": ASAIDT+".ace", "route": "0"}
+
         with open("tape30") as fold:
             with open("tape30_1", "w") as fnew:
                 for line in fold:
                     for key in find_replace:
-                        # replace if key is in file line
                         if key in line:
                             line = line.replace(key, find_replace[key])
+
                     # write new line in new file
                     fnew.write(line)
+
     except FileNotFoundError:
         success = False
 
     # loop over dictionaries
-    for dirname, fname in dir_names[proj].items():
-        # other files in "out" tree
-        if fname == "out.gz":
-            # read output file
-            with open('output', 'rb') as f_in:
-                with gzip.open('out.gz', 'wb') as f_out:
-                    sh.copyfileobj(f_in, f_out)
-            # define I/O path
-            ipath = os.path.join(tmpath, fname)
-            opath = os.path.join(path, dirname, ZAIDT+ext_names[proj][fname])
+    for dirname, fnamelst in dir_names[proj].items():
 
-        elif fname != "tape20" and fname != "tape21":
-            # ENDF-6 back to data directory
-            ipath = os.path.join(tmpath, fname)
-            opath = os.path.join(path, dirname, ZAIDT+ext_names[proj][fname])
+        if type(fnamelst) is not list:
+            fnamelst = [fnamelst]
 
-        else:
-            # ENDF-6 back to data dir
-            ipath = os.path.join(tmpath, fname)
-            opath = os.path.join(dirname, ext_names[proj][fname])
+        for fname in fnamelst:
 
-        try:
-            # move and rename file
-            sh.move(ipath, opath)
-        except FileNotFoundError:
-            success = False
+            # other files in "out" tree
+            if fname == "out.gz":
+                # read output file
+                with open('output', 'rb') as f_in:
+
+                    with gzip.open('out.gz', 'wb') as f_out:
+                        sh.copyfileobj(f_in, f_out)
+
+                # define I/O path
+                ipath = os.path.join(tmpath, fname)
+                opath = os.path.join(path, dirname, ASAIDT+ext_names[proj][fname])
+
+            elif fname != 'tape20' and fname != 'tape21':
+                # define I/O path
+                if fname is not None:
+                    ipath = os.path.join(tmpath, fname)
+                    opath = os.path.join(path, dirname, ASAIDT+ext_names[proj][fname])
+
+            else:
+                # ENDF-6 back to data dir
+                ipath = os.path.join(tmpath, fname)
+                opath = os.path.join(dirname, ext_names[proj][fname])
+
+            try:
+                # move and rename file
+                sh.move(ipath, opath)
+
+            except FileNotFoundError:
+                success = False
 
     # clean base directory from other NJOY tapes
     f_del = glob.glob(os.path.join(tmpath, "tape*"))
+
     for f in f_del:
         os.remove(f)
+
     # remove output file
     os.remove("output")
 
-    return success
+    return success, warn
 
 
 def run_njoy(inp, njoyver=2016):
@@ -407,8 +560,8 @@ def run_njoy(inp, njoyver=2016):
     return outstream
 
 
-def makeinput(datapath, pattern, part, libname, broad_temp=None, outpath=None,
-              atomrelax_datapath=None, njoyver=2016):
+def makeinput(datapath, pattern, part, libname, broad_temp=None, kerma=True,
+              outpath=None, atomrelax_datapath=None, njoyver=2016):
     """
     Write the NJOY input to files for future processing.
 
@@ -452,26 +605,35 @@ def makeinput(datapath, pattern, part, libname, broad_temp=None, outpath=None,
     # find pattern separators
     pattern, lib_extension = os.path.splitext(pattern)
     filesep = re.split(r"[ A Z S]+", pattern)
+
     # join for using re.split later
     filesep = "|".join(filesep)
+
     # add escape character "\" in front of special character "-", if any
     filesep = filesep.replace("-", r"\-")
+
     # split according to separators
     keys = re.split(r"["+filesep+"]+", pattern)
+
     # squeeze out empty strings, if any
     keys = list(filter(None, keys))
 
     # check minimum split has been done or act otherwise
     len_keys = [len(k) for k in keys]
+
     if max(len_keys) > 1:
         # split each key checking its length
         newkeys = []
+
         for k in keys:
+
             if len(k) > 1:
                 k = list(filter(None, re.split("", k)))
                 newkeys.extend(k)
+
             else:
                 newkeys.append(k)
+
         # define new keys
         keys = newkeys
 
@@ -484,12 +646,16 @@ def makeinput(datapath, pattern, part, libname, broad_temp=None, outpath=None,
     min_pos = min(str_pos, key=itemgetter(0))[0]
     max_pos = max(str_pos, key=itemgetter(1))[1]
     pattern = pattern[min_pos:max_pos]
+
     # store separator between AS, Z and A
     filesep = list(filter(None, re.split(r"[ A Z S]+", pattern)))
+
     # join for using re.split later
     filesep = "|".join(filesep)
+
     # replace A, AS and Z (if present) with \w+ for regex later use
     pattern = pattern.replace("Z", "\\d+").replace("S", "\\w+").replace("A", "\\d+")
+
     # define general pattern
     pattern = re.compile(pattern)
 
@@ -504,18 +670,24 @@ def makeinput(datapath, pattern, part, libname, broad_temp=None, outpath=None,
 
     # define particle key
     for key, names in partdict.items():
+
         if part in names:
+
             proj = key
 
     # gather atomic relaxation ENDF-6 files in datapath
     if atomrelax_datapath is None and proj == "pa":
+
         raise OSError("Atomic relaxation data path not provided!")
+
     if atomrelax_datapath is not None:
+
         ar_endfiles = [f for f in sorted(os.listdir(atomrelax_datapath))
                        if isfile(join(atomrelax_datapath, f))
                        if f.endswith(lib_extension)]
 
     outpath = mkdir("njoyinp", outpath)
+
     # make projectile-wise dir
     outpath = mkdir(proj, outpath)
 
@@ -524,27 +696,33 @@ def makeinput(datapath, pattern, part, libname, broad_temp=None, outpath=None,
 
         # split extension
         nuclname, lib_extension = os.path.splitext(endf)
-        # check if nuclide is metastable
+
+        # 1st check if nuclide is metastable
         if re.search("([0-9]+)m", nuclname) is not None:
             metaflag = 1  # initial value of flag for metastable elements
+
         else:
             metaflag = None  # initial value of flag for metastable elements
 
         # split according to separators
         iS, iE = re.search(pattern, endf).span()
         nuclname = nuclname[iS:iE]
+
         if filesep != '':
             keys = re.split(r"["+filesep+"]+", nuclname)
+
         else:
+
             keys = list(filter(None, re.split("(\\d+)", nuclname)))
 
         # get atomic number Z and atomic symbol AS
         try:  # name contains atomic symbol explicitly
-            # get atomic symbol
+
             AS = keys[patterndict["S"]]  # get position with dict val
-            # get atomic number
+
             try:
                 Z = ASZ_periodic_table()[AS]
+
             except KeyError:
                 Z = -1  # if AS is not inside the dict, dummy value for Z
 
@@ -552,12 +730,14 @@ def makeinput(datapath, pattern, part, libname, broad_temp=None, outpath=None,
             # get atomic number
             try:
                 Z = keys[patterndict["Z"]]
+
             except KeyError:
-                raise OSError("ENDF-6 file names does not contain neither" +
+                raise OSError("ENDF-6 file name does not contain neither" +
                               " Z nor the atomic symbol!")
             # get atomic symbol
             try:
                 AS = ZAS_periodic_table()[Z]
+
             except KeyError:
                 AS = ""  # if AS is not inside the dict, dummy value for AS
                 Z = -1  # if AS is not inside the dict, dummy value for AS
@@ -571,70 +751,82 @@ def makeinput(datapath, pattern, part, libname, broad_temp=None, outpath=None,
                 # check if nuclide is metastable
                 try:
                     int(A)
-                    # # metastable element flag
-                    # metaflag = None
+
                 except ValueError:
-                    # look for "m" char (metastable nuclide)
                     A = A.split("m")[0]
-                    # # metastable element flag
-                    # metaflag = 1
+
             except KeyError:
                 raise OSError("ENDF-6 filename should contain mass number!")
 
             # define ASA (atomic symbol and mass number)
             if metaflag is None:
                 ASA = AS+"-"+A
+
             else:
                 ASA = AS+"-"+A+"m"
-            # define ZAID (atomic and mass number)
+
+            # define basic ZAID (atomic and mass number)
             ZAID = str(Z)+A
-            if metaflag == 1:
-                ZAID = str(int(ZAID)+100)
 
             # parse MAT number from library file
             endf = os.path.join(datapath, endf)
-            fp = open(endf)
-            for iline, line in enumerate(fp):
-                if iline == 2:
-                    # read MAT number inside ENDF-6 format file
-                    MAT = line[66:70]
-                elif iline > 2:
-                    break
-            fp.close()
+
+            # parse ENDF to get MAT number and to check if natural isotope or isomer
+            ZA, MAT, natflag, iso = parseENDF6(endf)
+
+            if metaflag == 1 and iso == 0:
+                raise OSError("Name and isomer state conflict in %s" % endf)
+
+            if ZA != ZAID and natflag != 1:
+                raise OSError("Name and file ZAID conflict in %s" % endf)
+
             # rename ENDF-6 file with PoliTo nomenclature
             sh.move(endf, os.path.join(datapath, ASA+lib_extension))
-
+                        
             # generate njoy input file
             for tmp in broad_temp:  # loop over temperatures
                 # print message for the user
                 print("Building input file for %s at T=%s K..." % (endf, tmp))
+
                 # define file content
-                njoyinp = build_njoy_deck(ZAID, ASA, proj, libname, njoyver,
-                                          MAT, tmp=tmp)
-                # save file in proper directory
+                njoyinp = build_njoy_deck(MAT, ASA, proj, libname, njoyver, tmp=tmp)
+
                 fname = ASA+"_"+"{:02d}".format(int(tmp/100))
-                # define complete path
+
                 if outpath is not None:
                     fname = os.path.join(outpath, fname)
+
                 f = open(fname+".njoyinp", "w")
                 f.write(njoyinp)
                 f.close()
                 print("DONE \n")
 
+                if kerma is True:  # generate additional input
+                    # print message for the user
+                    print("Building additional input file for %s at T=%s K..."
+                          % (endf, tmp))
+
+                    # define file content
+                    njoyinp = build_njoy_deck(MAT, ASA, proj, libname, njoyver,
+                                              tmp=tmp, kerma=kerma)
+
+                    fname = ASA+"_"+"{:02d}".format(int(tmp/100))
+
+                    if outpath is not None:
+                        fname = os.path.join(outpath, fname)
+
+                    f = open(fname+".njoyinpK", "w")
+                    f.write(njoyinp)
+                    f.close()
+                    print("DONE \n")
+
         # photo-atomic data
         elif Z != -1 and proj == "pa":
+
             endf = os.path.join(datapath, endf)
 
-            # parse MAT number from library file
-            endf = os.path.join(datapath, endf)
-            fp = open(endf)
-            for iline, line in enumerate(fp):
-                if iline == 2:
-                    # read MAT number inside ENDF-6 format file
-                    MAT = line[66:70]
-                elif iline > 2:
-                    break
-            fp.close()
+            # parse ENDF to get MAT number and to check if natural isotope or isomer
+            ZA, MAT, natflag, iso = parseENDF6(endf)
 
             # rename ENDF-6 file with PoliTo nomenclature
             sh.move(endf, os.path.join(datapath, AS+lib_extension))
@@ -642,31 +834,38 @@ def makeinput(datapath, pattern, part, libname, broad_temp=None, outpath=None,
             # rename also atomic relaxation ENDF-6 files
             ar_endf = os.path.join(atomrelax_datapath, ar_endfiles[ifile])
             sh.move(ar_endf, os.path.join(atomrelax_datapath, AS+lib_extension))
-            # print message for the user
+
             print("Building input file for %s..." % (endf))
+
             # define file content
             njoyinp = build_njoy_deck(MAT, AS, proj, libname, njoyver)
-            # save file in proper directory
+
             fname = AS+"_00"
             # define complete path
             if outpath is not None:
                 fname = os.path.join(outpath, fname)
+
             f = open(fname+".njoyinp", "w")
             f.write(njoyinp)
             f.close()
+
             print("DONE \n")
+
         else:  # dummy value of Z means fake element
+
             print("Skipping %s-%s. It is not an element." % (AS, Z))
 
 
-def build_njoy_deck(elem, ASA, proj, libname, vers, MAT=None, tmp=None):
+def build_njoy_deck(MAT, ASA, proj, libname, vers, tmp=None, kerma=None):
     """
     Build the NJOY deck for processing.
 
     Parameters
     ----------
-    elem : string
-        Z, atomic number.
+    MAT : string
+        MAT number describing the nuclide inside the ENDF-6 file.
+        It is read from the file itself (user should not provide it).
+        The default is None.
     ASA : string
         Atomic symbol.
     proj : string
@@ -676,10 +875,6 @@ def build_njoy_deck(elem, ASA, proj, libname, vers, MAT=None, tmp=None):
     njoyver : string, optional
         NJOY version number (only 2016 and 2021 are supported).
         The default is 2016.
-    MAT : string
-        MAT number describing the nuclide inside the ENDF-6 file.
-        It is read from the file itself (user should not provide it).
-        The default is None.
     tmp : int
         Temperature for Doppler broadening. The default is None.
 
@@ -689,31 +884,37 @@ def build_njoy_deck(elem, ASA, proj, libname, vers, MAT=None, tmp=None):
         string that is passed to master function in order to write the NJOY
         input file
     """
-    # list preallocation
     lst = []
     lstapp = lst.append
+
     # define temperature suffix
     if tmp is not None:
         tmpsuff = "{:02d}".format(int(tmp/100))
-    # save datetime
+
     now = datetime.now()
     now = now.strftime("%d/%m/%Y, %H:%M:%S")
-    # save host name
+
     hostname = gethostname()
-    if proj == "n":  # fast (continuous-energy) neutron data
+
+    if proj == "n" and kerma is None:  # fast (continuous-energy) neutron data
 
         # MODER module
         lstapp("moder")
-        lstapp("20 -21/")  # convert tape20 in block-binary mode for efficiency
+        lstapp("1 -21/")  # convert tape20 in block-binary mode for efficiency
+        lstapp("'%s'/" % ASA)
+        lstapp("20 %s/" % MAT)
+        lstapp("0/")
+
         # RECONR module
         lstapp("reconr")
         lstapp("-21 -22/")
-        lstapp("''/")
+        lstapp("'%s PENDF'/" % ASA)
         lstapp("%s 2/" % MAT)
-        lstapp("0.01 0.0 0.01 5.0e-7/")
+        lstapp("0.001 0.0 0.01 5.0e-7/")
         lstapp("''/")
         lstapp("''/")
         lstapp("0/")
+
         # BROADR module
         lstapp("broadr")
         lstapp("-21 -22 -23/")
@@ -721,39 +922,66 @@ def build_njoy_deck(elem, ASA, proj, libname, vers, MAT=None, tmp=None):
         lstapp("0.01 2.0e6 0.01 5.0e-7/")
         lstapp("%12.5e/" % tmp)
         lstapp("0/")
-        # HEATR module
+
+        # HEATR module (local deposition)
         lstapp("heatr")
         lstapp("-21 -23 -24 40/")
-        lstapp("%s 7 0 1 1 2/" % MAT)
-        lstapp("302 303 304 318 402 443 444/")
+        lstapp("%s 7 0 0 1 2/" % MAT)
+        lstapp("302 303 304 318 401 443 444/")
+
         # GASPR module
         lstapp("gaspr")
         lstapp("-21 -24 -25/")
+
         # PURR module
         lstapp("purr")
         lstapp("-21 -25 -26/")
-        lstapp("%s 1 5 20 64/" % MAT)
+        lstapp("%s 1 7 20 64/" % MAT)
         lstapp("%12.5e/" % tmp)
-        lstapp("1.0e10 1.0e4 1.0e3 1.0e2 1.0e1/")
+        lstapp("1.0e10 1.0e5 1.0e4 1.0e3 1.0e2 1.0e1 1/")
         lstapp("0/")
+
         # ACER module
         lstapp("acer")
         lstapp("-21 -26 0 27 28/")
-        lstapp("1 0 1 .%s/" % tmpsuff)
+        lstapp("1 1 1 .%s/" % tmpsuff)
         lstapp("'%s, %s, NJOY%s, %s %s'/" % (ASA, libname, vers,
                                              hostname, now))
         lstapp("%s %12.5e/" % (MAT, tmp))
-        lstapp("/")
+        lstapp("1 1/")
         lstapp("/")
         lstapp("acer")  # re-run for QA checks
         lstapp("0 27 33 29 30/")
         lstapp("7 1 1 .%s/" % tmpsuff)
         lstapp("''/")
+
         # VIEWR module
         lstapp("viewr")
         lstapp("33 34/")  # plot ACER output
         lstapp("viewr")
         lstapp("40 35/")  # plot HEATR output
+
+    elif proj == "n" and kerma is True:
+
+        # HEATR module (gamma transport)
+        lstapp("heatr")
+        lstapp("-21 -23 -54 60/")
+        lstapp("%s 7 0 0 0 2/" % MAT)
+        lstapp("302 303 304 318 401 443 444/")
+
+        # PURR module
+        lstapp("purr")
+        lstapp("-21 -54 -56/")
+        lstapp("%s 1 7 20 64/" % MAT)
+        lstapp("%12.5e/" % tmp)
+        lstapp("1.0e10 1.0e5 1.0e4 1.0e3 1.0e2 1.0e1 1/")
+        lstapp("0/")
+
+        # MODER module
+        lstapp("moder")
+        lstapp("-26 66/")
+        lstapp("moder/")
+        lstapp("-56 67/")
 
     elif proj == "pa":  # photo-atomic data
         # ACER module
@@ -762,14 +990,16 @@ def build_njoy_deck(elem, ASA, proj, libname, vers, MAT=None, tmp=None):
         lstapp("4 1 1 .00/")
         lstapp("'%s, %s, NJOY%s, %s %s'/" % (ASA, libname, vers,
                                              hostname, now))
-        lstapp(" %s/" % elem)
+        lstapp(" %s/" % MAT)
         # no QA checks, no ACER plot available for this kind of data (2020)
 
     elif proj == "pn":  # photo-nuclear data
         # FIXME: NJOY docs do not contain any pn complete example
+
         # MODER module
         lstapp("moder")
         lstapp("20 -21/")  # convert tape20 in block-binary mode for efficiency
+
         # RECONR module
         lstapp("reconr")
         lstapp("-21 -22/")
@@ -778,6 +1008,7 @@ def build_njoy_deck(elem, ASA, proj, libname, vers, MAT=None, tmp=None):
         lstapp("0.001 0./")
         lstapp("/")
         lstapp("0/")
+
         # ACER module
         lstapp("acer")
         lstapp("-21 -22 0 27 28/")
@@ -789,6 +1020,7 @@ def build_njoy_deck(elem, ASA, proj, libname, vers, MAT=None, tmp=None):
         lstapp("0 27 33 29 30/")
         lstapp("7 1 1 .%s/" % tmpsuff)
         lstapp("/")
+
         # VIEWR module
         lstapp("viewr")
         lstapp("33 34/")  # plot ACER output
@@ -928,6 +1160,75 @@ def ASZ_periodic_table():
     periodictable = dict(zip(AS, Z))
     # return element dict
     return periodictable
+
+
+def parseENDF6(fname):
+    """Parse ENDF-6 format file to check Z, A, MAT, natural and isomeric flags."""
+    linepos = -10
+
+    with open(fname) as f:
+
+        for iline, line in enumerate(f):
+
+            if line[71:75] == "1451" and linepos == -10:
+                # read MAT number inside ENDF-6 format file
+                MAT = line[66:70]
+
+                # parse Z and A
+                line1 = line[0:11]
+
+                # remove exponential symbol, if any
+                line1 = line1.replace('e', '').replace('E', '')
+                line1 = line1.split("+")
+
+                if len(line1) == 1:
+                    line1 = line1[0].split(".")
+
+                ZA = int(float("%sE+%s" % (line1[0], line1[1])))
+                Z = int(ZA/1e3)
+                A = int(ZA-int(Z*1e3))
+
+                # check if natural element
+                if A == 0:
+                    natflag = 1
+
+                else:
+                    natflag = 0
+
+                linepos = iline
+
+            elif iline == linepos+1:
+
+                # parse exitation energy and isomeric state
+                line = line.split()
+                ext_en = float(line[0].replace('+', 'E+'))
+                iso_st = int(line[3])
+
+                # check consistency
+                if ext_en > 0 and iso_st == 0:
+                    raise ValueError("Exitation energy > 0 for" +
+                                     "non-isomeric state in %s." % fname)
+
+                # set isomer multiplier
+                if iso_st > 0:
+                    if A > 200:
+                        iso = 1
+
+                    elif A > 100:
+                        iso = 2
+
+                    else:
+                        iso = 3
+
+                else:  # if iso_st = 0:
+                    iso = 0
+
+                break
+
+            else:
+                continue
+
+    return str(ZA), MAT, natflag, iso
 
 
 def ZAS_periodic_table():
