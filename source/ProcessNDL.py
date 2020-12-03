@@ -919,7 +919,7 @@ def build_njoy_deck(MAT, ASA, proj, libname, vers, tmp=None, kerma=None):
         lstapp("broadr")
         lstapp("-21 -22 -23/")
         lstapp("%s 1/" % MAT)
-        lstapp("0.01 2.0e6 0.01 5.0e-7/")
+        lstapp("0.001 2.0e6 0.01 5.0e-7/")
         lstapp("%12.5e/" % tmp)
         lstapp("0/")
 
@@ -1056,8 +1056,10 @@ def convertxsdir(datapath, proj, libname, ndlpath, currpath=None):
     '''
     if currpath is None:
         pwd = os.getcwd()
+
     else:
         pwd = currpath
+
     # loop over projectiles
     for p in proj:
         # define paths
@@ -1065,6 +1067,7 @@ def convertxsdir(datapath, proj, libname, ndlpath, currpath=None):
         fname = 'sss2_%s_%s.xsdir' % (libname, p)
         fname = os.path.join(pwd, fname)
         xsdirpath = os.path.join(datapath, p, "xsdir")
+
         # insert datapath in xsdir_header
         headname = os.path.join(pwd, 'xsdir_header')
         header = _insert_top_lines_str(datastr, headname)
@@ -1074,6 +1077,7 @@ def convertxsdir(datapath, proj, libname, ndlpath, currpath=None):
                       sorted(os.listdir(xsdirpath))
                       if isfile(os.path.join(xsdirpath, f))
                       if f.endswith(".xsdir")]
+
         # merge .xsdir files
         _mergefiles(fname, xsdirfiles)
 
@@ -1096,18 +1100,25 @@ def convertxsdir(datapath, proj, libname, ndlpath, currpath=None):
     xsdatalist = [os.path.join(pwd, f) for f in sorted(os.listdir(pwd))
                   if isfile(os.path.join(pwd, f))
                   if f.endswith(".xsdata")]
+
     xsdirlist = [os.path.join(pwd, f) for f in sorted(os.listdir(pwd))
                  if isfile(os.path.join(pwd, f))
                  if f.endswith(".xsdir")]
+
     xsdatafname = 'sss2_%s.xsdata' % libname
     xsdirfname = 'sss2_%s.xsdir' % libname
+
     _mergefiles(xsdatafname, xsdatalist)
     _mergefiles(xsdirfname, xsdirlist)
+
     p1 = os.path.join(pwd, xsdatafname)
     p2 = os.path.join(ndlpath, xsdatafname)
+
     sh.move(p1, p2)
+
     p1 = os.path.join(pwd, xsdirfname)
     p2 = os.path.join(ndlpath, xsdirfname)
+
     sh.move(p1, p2)
 
     # move and clean files
