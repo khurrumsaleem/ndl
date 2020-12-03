@@ -11,6 +11,7 @@ import subprocess
 import shutil as sh
 from ProcessNDL import parseENDF6
 
+
 def execute(commands):
     # execute job in the shell
     process = subprocess.Popen('./boxr2cov1000.exe', stdout=subprocess.PIPE,
@@ -28,7 +29,14 @@ def execute(commands):
 
 
 if __name__ == '__main__':
-    pwd = os.getcwd()
+    import argparse as arg
+
+    parser = arg.ArgumentParser(description='Insert path to covariance files' +
+                                ' to be processed.')
+    parser.add_argument('path', metavar='path', type=str,
+                        help='Path to covariance files directory')
+    args = parser.parse_args()
+    pwd = args.path
     # nuclides ZAid
     # zaid = [942390, 942400, 942410, 942420, 922380]
     nuclides = [922340, 922350, 922360, 942380, 952410]
@@ -49,7 +57,8 @@ if __name__ == '__main__':
             sh.copyfile(os.path.join(pwd, 'boxr2cov1000.exe'),
                         os.path.join(cwd, 'boxr2cov1000.exe'))
             # parse MAT number
-            _, mat, _, _ = parseENDF6(os.path.join(pwd, 'tape20'))
+            _, mat, _, _ = parseENDF6(os.path.join(cwd, 'tape20'))
+            mat = int(mat)
             os.chdir(cwd)
             args = ['tape78', '', '', 'tmp', '0,0']
             for m1, m2 in MTs:
