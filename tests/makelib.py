@@ -3,22 +3,29 @@ author: N. Abrate.
 
 file: makelib.py
 
-description: Convert xsdir files to a single .xsdata file for Serpent-2.
+description: Build ACE library for Serpent-2.
 """
-import os
+
+import sys
+import pathlib
+
+pwd = pathlib.Path.cwd()
+src = (pwd.parent).joinpath("source")
+sys.path.append(str(src))
+
 import ProcessNDL as ndl
 
 # define "tutorial" path
-pwd = os.getcwd()
-datapath = os.path.join(pwd, "endf")
+pwd = pathlib.Path.cwd()
+datapath = pwd.joinpath("endf")
 
 # absolute path of NJOY input
-inpath = os.path.join(pwd, "njoyinp")
+inpath = datapath.joinpath("njoyinp")
 
 # generate neutron library
-ndl.buildacelib(inpath, datapath, "neutrons", "endf", ["n"], copyflag=True,
-                np=6)
+ndl.buildacelib(str(inpath), str(datapath), "neutrons", "endf",
+                ["n"], copyflag=True, np=12)  # np is the number of CPUs
 
 # generate photo-atomic library
-ndl.buildacelib(inpath, datapath, "photoat", "endf", ["pa"], atom_relax="atomic_relax",
-                np=6)
+ndl.buildacelib(str(inpath), str(datapath), "photoat", "endf", ["pa"],
+                atom_relax="atomic_relax", np=12)

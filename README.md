@@ -1,29 +1,22 @@
-# README #
+NDL is a python package that can build NJOY (http://www.njoy21.io/) input with default settings and run NJOY in order to convert the nuclear data files from
+[ENDF-6 format](https://www.oecd-nea.org/dbdata/data/manual-endf/endf102.pdf) into ACE files that can be employed in Serpent-2 (http://montecarlo.vtt.fi/) or MCNP (https://mcnp.lanl.gov/) codes.
+The primary objective of the code is to process neutron and photo-atomic ENDF-6 files for Monte Carlo simulations.
 
-This README would normally document whatever steps are necessary to get your application up and running.
+ ***
 
-### What is this repository for? ###
+## Installation
 
-* Quick summary
-* Version
-* [Learn Markdown](https://bitbucket.org/tutorials/markdowndemo)
+To install NDL, run the following command:
 
-### How do I get set up? ###
+```
+git clone https://nicolo_abrate@bitbucket.org/nemofissiondivision/ndl.git
+```
+Then, add it to your python path.
+## Contacts
 
-* Summary of set up
-* Configuration
-* Dependencies
-* Database configuration
-* How to run tests
-* Deployment instructions
+* [**Nicolo' Abrate**](http://www.nemo.polito.it/) - nicolo.abrate@polito.it
 
-### Contribution guidelines ###
-
-* Writing tests
-* Code review
-* Other guidelines
-
-### Who do I talk to? ###
-
-* Repo owner or admin
-* Other community or team contact
+## Acknowledgments
+The Serpent developers teams is thankfully aknowledged for having
+shared the procedures used to prepare the energy deposition additional
+data required in the ACE files.
