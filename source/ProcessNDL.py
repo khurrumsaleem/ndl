@@ -734,7 +734,7 @@ def build_njoy_deck(elem, ASA, proj, libname, vers, MAT=None, tmp=None):
         lstapp("-21 -25 -26/")
         lstapp("%s 1 5 20 64/" % MAT)
         lstapp("%12.5e/" % tmp)
-        lstapp("1.0e10 1.0e4 1.0e3 1.0e2 1.0e1/")
+        lstapp("1.0e10/")
         lstapp("0/")
         # ACER module
         lstapp("acer")

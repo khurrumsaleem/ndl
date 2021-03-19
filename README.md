@@ -9,7 +9,7 @@ The primary objective of the code is to process neutron and photo-atomic ENDF-6 
 To install NDL, run the following command:
 
 ```
-git clone https://nicolo_abrate@bitbucket.org/nemofissiondivision/ndl.git
+git clone https://github.com/nicoloabrate/ndl.git
 ```
 Then, add it to your python path.
 ## Contacts
