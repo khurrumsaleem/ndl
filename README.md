@@ -17,8 +17,15 @@ The primary objective of the code is to process neutron and photo-atomic ENDF-6 
 To install NDL, run the following command:
 
 ```
-git clone https://nicolo_abrate@bitbucket.org/nemofissiondivision/ndl.git
+git clone https://github.com/nicoloabrate/ndl.git
 ```
+Then, add it to your python path or locally install it via pip
+```
+pip install path_to_ndl_parent_directoy/ndl/
+```
+
+To properly run NDL, you need [NJOY2016](https://github.com/njoy/NJOY2016) or [NJOY21](https://github.com/njoy/NJOY21) properly installed on your Linux machine.
+
 <br>
 
 ## :notebook_with_decorative_cover: Documentation
@@ -33,9 +40,13 @@ git clone https://nicolo_abrate@bitbucket.org/nemofissiondivision/ndl.git
 <br>
 
 ## :bookmark: Acknowledgments
-
+The Serpent developers teams is thankfully aknowledged for having
+shared the procedures used to prepare the energy deposition additional
+data required in the ACE files.
 
 <br>
 
 ## :clipboard: Reference
 
+[NJOY2016](https://github.com/njoy/NJOY2016)
+[Serpent 2 Monte Carlo code](http://montecarlo.vtt.fi/)

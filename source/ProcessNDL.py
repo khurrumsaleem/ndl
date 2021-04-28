@@ -26,6 +26,8 @@ import time as t
 import numpy as np
 import shutil as sh
 import multiprocessing as mp
+
+from itertools import groupby
 from datetime import datetime
 from socket import gethostname
 from operator import itemgetter
@@ -212,7 +214,7 @@ def par_ace_lib(args):
         if fK is not None:
             outstreamK = run_njoy(os.path.join(inpath, proj, fK), njoyver=njoyver)
 
-        success, KERMA_warn = move_and_clean(f, fK, outpath, tmpath, libpath, data, 
+        success, KERMA_warn = move_and_clean(f, fK, outpath, tmpath, libpath, data,
                                              endfname, proj, atom_relax)
 
         # completed and failed
@@ -782,7 +784,7 @@ def makeinput(datapath, pattern, part, libname, broad_temp=None, kerma=True,
 
             # rename ENDF-6 file with PoliTo nomenclature
             sh.move(endf, os.path.join(datapath, ASA+lib_extension))
-                        
+
             # generate njoy input file
             for tmp in broad_temp:  # loop over temperatures
                 # print message for the user
@@ -936,9 +938,9 @@ def build_njoy_deck(MAT, ASA, proj, libname, vers, tmp=None, kerma=None):
         # PURR module
         lstapp("purr")
         lstapp("-21 -25 -26/")
-        lstapp("%s 1 7 20 64/" % MAT)
+        lstapp("%s 1 1 20 64/" % MAT)
         lstapp("%12.5e/" % tmp)
-        lstapp("1.0e10 1.0e5 1.0e4 1.0e3 1.0e2 1.0e1 1/")
+        lstapp("1.0e10/")
         lstapp("0/")
 
         # ACER module
