@@ -28,10 +28,6 @@ To properly run NDL, you need [NJOY2016](https://github.com/njoy/NJOY2016) or [N
 
 <br>
 
-## :notebook_with_decorative_cover: Documentation
-
-
-<br>
 
 ## :telephone_receiver: Contacts
 
@@ -45,8 +41,3 @@ shared the procedures used to prepare the energy deposition additional
 data required in the ACE files.
 
 <br>
-
-## :clipboard: Reference
-
-[NJOY2016](https://github.com/njoy/NJOY2016)
-[Serpent 2 Monte Carlo code](http://montecarlo.vtt.fi/)

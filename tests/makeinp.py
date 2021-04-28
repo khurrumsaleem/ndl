@@ -24,14 +24,14 @@ ar_datapath = tutorialpath.joinpath("atomic_relax")
 
 # define additional arguments for NJOY input creation
 outpath = tutorialpath
-pattern_n = "S-A.endf"
+pattern_n = "S-A.endf"  # pattern of the ENDF-6 file. S is the nuclide symbol, A the mass number
 pattern_pa = "S.endf"
 libname = "ENDF-B/VIII.0"
 njoyver = "2016"
 broad_temp = [300]
 
-# make input for neutron evaluations
+# make NJOY input for neutron evaluations
 ndl.makeinput(n_datapath, pattern_n, "n", libname, broad_temp, outpath=outpath)
-# make input for photo-atomic evaluations
+# make NJOY input for photo-atomic evaluations
 ndl.makeinput(pa_datapath, pattern_pa, "pa", libname, broad_temp=None,
               outpath=outpath, atomrelax_datapath=ar_datapath)
