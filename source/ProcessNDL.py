@@ -44,9 +44,29 @@ partdict = {"n": ["neutron", "neutrons", "neutronic", "n"],
 # define particles ACE type
 pdict = {"n": "c", "pa": "p", "pn": "g"}
 
+def get_njoy():
+    """
+    Extract NJOY executable from system environment variable `NJOY`.
 
-def buildacelib(inpath, libpath, data, libext, particles, njoyver=2016,
-                atom_relax=None, np=None, copyflag=True):
+    Returns
+    -------
+    `string`
+        NE executable
+
+    Raises
+    ------
+    `NDLError`
+        if environment variable `NJOY` is not assigned
+    """
+    if "NJOY" in os.environ:
+        exe = join(os.environ["NJOY"])
+    else:
+        raise ValueError("environment variable 'NJOY' is not assigned")
+    return exe
+
+def buildacelib(inpath, libpath, data, libext, particles, njoyver,
+                atom_relax=None, np=None, copyflag=True, binary=True,
+                njoypath=None):
     """
     Build the ACE library (with NJOY stream, VIEWR, XSDIR PENDF output files).
 
@@ -122,29 +142,28 @@ def buildacelib(inpath, libpath, data, libext, particles, njoyver=2016,
         inpfilesK = [None]*len(inpfiles)
         for ipos, f in enumerate(inpfiles):
             name, ext = f.split(".")
-            kname = '%s.njoyinpK' % name
+            kname = f"{name}.njoyinpK"
 
             if isfile(join(inpath, proj, kname)):
                 inpfilesK[ipos] = kname
 
         # print warning for the user
         if inpfiles == []:
-            raise OSError("Warning: %s is empty!" % os.path.join(inpath, proj))
+            raise OSError(f"Warning: {os.path.join(inpath, proj)} is empty!")
 
         if None in inpfilesK and proj == "n":
-            print("Warning: some KERMA files are missing for %s!" % os.path.join(inpath,
-                                                                                 proj))
+            print(f"Warning: some KERMA files are missing for {os.path.join(inpath, proj)}!")
         # process library with NJOY
 
         # define list of arguments for parallel function
         args = [(inpath, outpath, proj, libext, libpath, data, atom_relax,
-                 copyflag, njoyver)]
+                 copyflag, njoyver, binary, njoypath)]
         args = list(zip(inpfiles, inpfilesK, args*len(inpfiles)))
 
         # process input with NJOY on np cores
         pool.map(par_ace_lib, args)
 
-        print("The processed library is stored in %s" % outpath)
+        print(f"The processed library is stored in {outpath}")
 
 
 def par_ace_lib(args):
@@ -165,7 +184,7 @@ def par_ace_lib(args):
     """
     # unpack input arguments
     f, fK, tup = args
-    inpath, outpath, proj, libext, libpath, data, atom_relax, copyflag, njoyver = tup
+    inpath, outpath, proj, libext, libpath, data, atom_relax, copyflag, njoyver, binary, njoypath = tup
 
     # create temporary directories in outpath to avoid mixing NJOY output
     with tempfile.TemporaryDirectory(dir=outpath) as tmpath:
@@ -180,7 +199,7 @@ def par_ace_lib(args):
         fname, tmp = fname_tmp.split("_")
 
         if libext is not None:
-            endfname = fname+"."+libext
+            endfname = f"{fname}.{libext}"
         else:
             endfname = fname
 
@@ -197,7 +216,7 @@ def par_ace_lib(args):
                             os.path.join(tmpath, "tape20"))
 
         except FileNotFoundError:
-            print("File %s does not exist!" % os.path.join(libpath, data, endfname))
+            print(f"File {os.path.join(libpath, data, endfname)} does not exist!")
 
         # move atomic relaxation ENDF-6 files in input dir
         if proj == "pa":
@@ -207,58 +226,58 @@ def par_ace_lib(args):
         # run NJOY, then clean directory
         start_time = t.time()
 
-        outstream = run_njoy(os.path.join(inpath, proj, f), njoyver=njoyver)
+        outstream = run_njoy(os.path.join(inpath, proj, f), njoyver=njoyver,
+                             njoypath=njoypath)
 
         outstreamK = None
 
         if fK is not None:
-            outstreamK = run_njoy(os.path.join(inpath, proj, fK), njoyver=njoyver)
+            outstreamK = run_njoy(os.path.join(inpath, proj, fK), njoyver=njoyver,
+                                  njoypath=njoypath)
 
         success, KERMA_warn = move_and_clean(f, fK, outpath, tmpath, libpath, data,
-                                             endfname, proj, atom_relax)
+                                             endfname, proj, atom_relax, binary)
 
         # completed and failed
         if success is True:
             with open(os.path.join(outpath, 'COMPLETED.txt'), 'a') as compl:
-                compl.write("%s processing COMPLETED. %s \n"
-                            % (f.split(".")[0], printime(start_time)))
+                compl.write(f"{f.split(".")[0]} processing COMPLETED. {printime(start_time)} \n")
         else:
             with open(os.path.join(outpath, 'FAILED.txt'), 'a') as fail:
-                fail.write("%s processing FAILED. %s \n"
-                           % (f.split(".")[0], printime(start_time)))
+                fail.write(f"{f.split(".")[0]} processing FAILED. {printime(start_time)} \n")
 
         # NJOY warning and errors
         if outstream is not None:
             if outstream == "warning":
                 with open(os.path.join(outpath, 'WARNINGS_NJOY.txt'), 'a') as warn:
-                    warn.write("-------------- %s -------------- \n" % f)
-                    warn.write("Consistency problems found in acer running %s \n" % f)
+                    warn.write(f"-------------- {f} -------------- \n")
+                    warn.write(f"Consistency problems found in acer running {f} \n")
             else:
                 with open(os.path.join(outpath, 'ERRORS_NJOY.txt'), 'a') as fail:
-                    fail.write("-------------- %s -------------- \n" % f)
+                    fail.write(f"-------------- {f} -------------- \n")
                     fail.write(outstream+'\n')
 
         # KERMA NJOY warning and errors
         if outstreamK is not None:
             if outstreamK == "warning":
                 with open(os.path.join(outpath, 'WARNINGS_NJOY_KERMA.txt'), 'a') as warn:
-                    warn.write("-------------- %s -------------- \n" % f)
-                    warn.write("Consistency problems found in acer running %s \n" % f)
+                    warn.write(f"-------------- {f} -------------- \n")
+                    warn.write(f"Consistency problems found in acer running {f} \n")
             else:
                 with open(os.path.join(outpath, 'ERRORS_NJOY_KERMA.txt'), 'a') as fail:
-                    fail.write("-------------- %s -------------- \n" % f)
+                    fail.write(f"-------------- {f} -------------- \n")
                     fail.write(outstream+'\n')
 
         # KERMA ENDF-6 warning
         if KERMA_warn is not None:
             with open(os.path.join(outpath, 'WARNINGS_ENDF_KERMA.txt'), 'a') as warn:
-                warn.write("-------------- %s -------------- \n" % f)
+                warn.write(f"-------------- {f} -------------- \n")
                 warn.write("\n".join(KERMA_warn))
                 warn.write("\n")
 
 
 def move_and_clean(inp, inpK, path, tmpath, libpath, data, endfname, proj,
-                   atom_relax=None):
+                   atom_relax=None, binary=True):
     """
     Move and clean output files in temporary directory.
 
@@ -309,8 +328,10 @@ def move_and_clean(inp, inpK, path, tmpath, libpath, data, endfname, proj,
     else:
         atom_relax_datapath = None
 
+    pendfnames = ["tape26", "tape56"] if binary else ["tape96", "tape67"]
+
     # neutrons dict with names of files to be kept when cleaning files
-    dir_names = {"n": {datapath: "tape20", "pendfdir_bin": ["tape26", "tape56"],
+    dir_names = {"n": {datapath: "tape20", "pendfdir_bin": pendfnames,
                        "acedir": "tape29", "xsdir": "tape30_1", "njoyout": "out.gz",
                        "viewheatdir": ["tape35", "tape60"], "viewacedir": "tape34",
                        "njoyinp": [inp, inpK]},
@@ -323,11 +344,11 @@ def move_and_clean(inp, inpK, path, tmpath, libpath, data, endfname, proj,
 
     # neutrons dict with new names when moving files
     ext_names = {"n": {"tape20": endfname, "tape21": endfname,
-                       "tape26": ".pendf", "tape29": ".ace",
+                       "tape26": ".pendf", "tape96": ".pendf", "tape29": ".ace",
                        "tape30_1": ".xsdir", "out.gz": ".out.gz",
                        "tape34": ".eps", "tape35": ".eps", inp: ".njoyinp",
                        inpK: ".njoyinpK", "tape56": "_KERMA.pendf", "tape60":
-                       "_KERMA.eps"},
+                       "_KERMA.eps", "tape67": "_KERMA.pendf",},
                  "pa": {"tape20": endfname, "tape21": endfname,
                         "tape29": ".ace", "tape30_1": ".xsdir",
                         "out.gz": ".out.gz", inp: ".njoyinp"},
@@ -427,11 +448,9 @@ def move_and_clean(inp, inpK, path, tmpath, libpath, data, endfname, proj,
 
                 if count == 0:
                     warn.append("Warning: no additional ures data for KERMA" +
-                                " data for %s" % ZAIDT1)
-
+                                f" data for {ZAIDT1}")
             if warn == []:
                 warn = None
-
         else:
             warn = []
 
@@ -505,7 +524,7 @@ def move_and_clean(inp, inpK, path, tmpath, libpath, data, endfname, proj,
     return success, warn
 
 
-def run_njoy(inp, njoyver=2016):
+def run_njoy(inp):
     """
     Execute the Linux system command to run NJOY.
 
@@ -515,9 +534,6 @@ def run_njoy(inp, njoyver=2016):
     inp : string
         NJOY input file name with absolute path
         (e.g. "/home/user/njoyinput/H-001.njoyinp")
-    njoyver : int, optional
-        NJOY version number (only 2016 and 2021 are supported).
-        The default is 2016.
 
     Raises
     ------
@@ -533,12 +549,13 @@ def run_njoy(inp, njoyver=2016):
     fname, ext = os.path.splitext(inp)
 
     # define NJOY command
-    if njoyver == 2016:
-        cmd = 'njoy2016 < %s' % inp
-    elif njoyver == 2021:
-        cmd = 'njoy21 -i %s' % inp
+    cmd = get_njoy()
+    if "2016" in cmd:
+        cmd = f"{cmd} < {inp}"
+    elif "2021" in cmd:
+        cmd = f"{cmd} -i {inp}"
     else:
-        print("The specified NJOY version is not available.")
+        print("The specified NJOY version cannot be recognised!")
         raise OSError
 
     # execute NJOY in the shell
@@ -563,7 +580,8 @@ def run_njoy(inp, njoyver=2016):
 
 
 def makeinput(datapath, pattern, part, libname, broad_temp=None, kerma=True,
-              outpath=None, atomrelax_datapath=None, njoyver=2016):
+              outpath=None, atomrelax_datapath=None, random=False,
+              binary=True):
     """
     Write the NJOY input to files for future processing.
 
@@ -590,9 +608,6 @@ def makeinput(datapath, pattern, part, libname, broad_temp=None, kerma=True,
     atomrelax_datapath : string, optional
         path with atomic relaxation data for photo-atomic data.
         The default is None.
-    njoyver : string, optional
-        NJOY version number (only 2016 and 2021 are supported).
-        The default is 2016.
 
     Raises
     ------
@@ -604,9 +619,17 @@ def makeinput(datapath, pattern, part, libname, broad_temp=None, kerma=True,
     -------
     None.
     """
+    # get NJOY version
+    cmd = get_njoy()
+    if "2016" in cmd:
+        njoyver = "2016"
+    elif "2021" in cmd:
+        njoyver = "21"
+    else:
+        raise OSError("Cannot recognise NJOY version!")
     # find pattern separators
     pattern, lib_extension = os.path.splitext(pattern)
-    filesep = re.split(r"[ A Z S]+", pattern)
+    filesep = re.split(r"[ A Z S N]+", pattern)
 
     # join for using re.split later
     filesep = "|".join(filesep)
@@ -643,20 +666,24 @@ def makeinput(datapath, pattern, part, libname, broad_temp=None, kerma=True,
     patterndict = {s: ipos for ipos, s in enumerate(keys)}
 
     # replace A, AS and Z (if present) with \w+ for regex later use
-    str_iterator = re.finditer(r"[A Z S]+", pattern)
+    str_iterator = re.finditer(r"[A Z S N]+", pattern)
     str_pos = [val.span() for val in str_iterator]
     min_pos = min(str_pos, key=itemgetter(0))[0]
     max_pos = max(str_pos, key=itemgetter(1))[1]
     pattern = pattern[min_pos:max_pos]
 
     # store separator between AS, Z and A
-    filesep = list(filter(None, re.split(r"[ A Z S]+", pattern)))
+    filesep = list(filter(None, re.split(r"[ A Z S N]+", pattern)))
 
     # join for using re.split later
-    filesep = "|".join(filesep)
-
-    # replace A, AS and Z (if present) with \w+ for regex later use
-    pattern = pattern.replace("Z", "\\d+").replace("S", "\\w+").replace("A", "\\d+")
+    x = "|".join(filesep)
+    mystr = re.search("([a-z]+)", x)
+    if mystr is not None:
+        for s in mystr.groups():
+            x = x.replace(s, '|{}|'.format(s))
+    # replace A, AS, Z and N (if present) with \w+ for regex later use
+    filesep = x
+    pattern = pattern.replace("Z", "\\d+").replace("S", "\\w+").replace("A", "\\d+").replace("N", "\\d+")
 
     # define general pattern
     pattern = re.compile(pattern)
@@ -699,6 +726,11 @@ def makeinput(datapath, pattern, part, libname, broad_temp=None, kerma=True,
         # split extension
         nuclname, lib_extension = os.path.splitext(endf)
 
+        if "." in lib_extension:
+            lib_extension = lib_extension.split(".")[-1]
+
+        if lib_extension == '':
+            lib_extension = 'endf6'
         # 1st check if nuclide is metastable
         if re.search("([0-9]+)m", nuclname) is not None:
             metaflag = 1  # initial value of flag for metastable elements
@@ -709,19 +741,34 @@ def makeinput(datapath, pattern, part, libname, broad_temp=None, kerma=True,
         # split according to separators
         iS, iE = re.search(pattern, endf).span()
         nuclname = nuclname[iS:iE]
-
         if filesep != '':
-            keys = re.split(r"["+filesep+"]+", nuclname)
-
+            if 'endf' in filesep:
+                keys = re.split(filesep, nuclname)
+            else:
+                keys = re.split(r"["+filesep+"]+", nuclname)
+            # check keys consistency
+            if len(keys) != len(patterndict.keys()):
+                tmpkeys = []
+                for k in keys:
+                    _ = list(filter(None, re.split("(\\d+)", k)))
+                    tmpkeys.extend(_)
+                if len(tmpkeys) != len(patterndict.keys()):
+                    raise OSError('Pattern name not recognised!')
+                else:
+                    keys = tmpkeys
         else:
-
             keys = list(filter(None, re.split("(\\d+)", nuclname)))
+
+
 
         # get atomic number Z and atomic symbol AS
         try:  # name contains atomic symbol explicitly
 
             AS = keys[patterndict["S"]]  # get position with dict val
-
+            try:
+                N = keys[patterndict["N"]]
+            except KeyError:
+                N = None
             try:
                 Z = ASZ_periodic_table()[AS]
 
@@ -783,7 +830,11 @@ def makeinput(datapath, pattern, part, libname, broad_temp=None, kerma=True,
                 raise OSError("Name and file ZAID conflict in %s" % endf)
 
             # rename ENDF-6 file with PoliTo nomenclature
-            sh.move(endf, os.path.join(datapath, ASA+lib_extension))
+            endfnewname = '{}-{}'.format(ASA, N) if N else '{}'.format(ASA)
+            endfnewname = '{}.{}'.format(endfnewname, lib_extension) if lib_extension else endfnewname
+            endfnewname = os.path.join(datapath, endfnewname)
+            if endf != endfnewname:
+                sh.move(endf, endfnewname)
 
             # generate njoy input file
             for tmp in broad_temp:  # loop over temperatures
@@ -791,19 +842,19 @@ def makeinput(datapath, pattern, part, libname, broad_temp=None, kerma=True,
                 print("Building input file for %s at T=%s K..." % (endf, tmp))
 
                 # define file content
-                njoyinp = build_njoy_deck(MAT, ASA, proj, libname, njoyver, tmp=tmp)
-
-                fname = ASA+"_"+"{:02d}".format(int(tmp/100))
+                njoyinp = build_njoy_deck(MAT, ASA, proj, libname, njoyver, tmp=tmp, binary=binary)
+                T = int(tmp/100)
+                basename = "{}-{}_{:02d}".format(ASA, N, T) if N else "{}_{:02d}".format(ASA, T)
 
                 if outpath is not None:
-                    fname = os.path.join(outpath, fname)
+                    fname = os.path.join(outpath, basename)
 
                 f = open(fname+".njoyinp", "w")
                 f.write(njoyinp)
                 f.close()
                 print("DONE \n")
 
-                if kerma is True:  # generate additional input
+                if kerma:  # generate additional input
                     # print message for the user
                     print("Building additional input file for %s at T=%s K..."
                           % (endf, tmp))
@@ -812,10 +863,8 @@ def makeinput(datapath, pattern, part, libname, broad_temp=None, kerma=True,
                     njoyinp = build_njoy_deck(MAT, ASA, proj, libname, njoyver,
                                               tmp=tmp, kerma=kerma)
 
-                    fname = ASA+"_"+"{:02d}".format(int(tmp/100))
-
                     if outpath is not None:
-                        fname = os.path.join(outpath, fname)
+                        fname = os.path.join(outpath, basename)
 
                     f = open(fname+".njoyinpK", "w")
                     f.write(njoyinp)
@@ -858,7 +907,7 @@ def makeinput(datapath, pattern, part, libname, broad_temp=None, kerma=True,
             print("Skipping %s-%s. It is not an element." % (AS, Z))
 
 
-def build_njoy_deck(MAT, ASA, proj, libname, vers, tmp=None, kerma=None):
+def build_njoy_deck(MAT, ASA, proj, libname, vers, tmp=None, kerma=None, binary=True):
     """
     Build the NJOY deck for processing.
 
@@ -874,11 +923,13 @@ def build_njoy_deck(MAT, ASA, proj, libname, vers, tmp=None, kerma=None):
         incident particle for the desired data (e.g. "n", "pa", "pn").
     libname : string
         complete library name (e.g. "ENDF-B/VII.1")
-    njoyver : string, optional
+    vers : string, optional
         NJOY version number (only 2016 and 2021 are supported).
         The default is 2016.
     tmp : int
         Temperature for Doppler broadening. The default is None.
+    binary : bool, optional
+        Flag to convert PENDF in ASCII. Default is ``False``.
 
     Returns
     -------
@@ -903,15 +954,15 @@ def build_njoy_deck(MAT, ASA, proj, libname, vers, tmp=None, kerma=None):
         # MODER module
         lstapp("moder")
         lstapp("1 -21/")  # convert tape20 in block-binary mode for efficiency
-        lstapp("'%s'/" % ASA)
-        lstapp("20 %s/" % MAT)
+        lstapp(f"'{ASA}'/")
+        lstapp(f"20 {MAT}/")
         lstapp("0/")
 
         # RECONR module
         lstapp("reconr")
         lstapp("-21 -22/")
-        lstapp("'%s PENDF'/" % ASA)
-        lstapp("%s 2/" % MAT)
+        lstapp(f"'{ASA} PENDF'/")
+        lstapp(f"{MAT} 2/")
         lstapp("0.001 0.0 0.01 5.0e-7/")
         lstapp("''/")
         lstapp("''/")
@@ -920,15 +971,15 @@ def build_njoy_deck(MAT, ASA, proj, libname, vers, tmp=None, kerma=None):
         # BROADR module
         lstapp("broadr")
         lstapp("-21 -22 -23/")
-        lstapp("%s 1/" % MAT)
+        lstapp(f"{MAT} 1/")
         lstapp("0.001 2.0e6 0.01 5.0e-7/")
-        lstapp("%12.5e/" % tmp)
+        lstapp(f"{tmp:12.5e}/")
         lstapp("0/")
 
         # HEATR module (local deposition)
         lstapp("heatr")
         lstapp("-21 -23 -24 40/")
-        lstapp("%s 7 0 0 1 2/" % MAT)
+        lstapp(f"{MAT} 7 0 0 1 2/")
         lstapp("302 303 304 318 401 443 444/")
 
         # GASPR module
@@ -938,23 +989,26 @@ def build_njoy_deck(MAT, ASA, proj, libname, vers, tmp=None, kerma=None):
         # PURR module
         lstapp("purr")
         lstapp("-21 -25 -26/")
-        lstapp("%s 1 1 20 64/" % MAT)
-        lstapp("%12.5e/" % tmp)
+        lstapp(f"{MAT} 1 1 20 64/")
+        lstapp(f"{tmp:12.5e}/")
         lstapp("1.0e10/")
         lstapp("0/")
 
+        # MODER module
+        if binary is False:
+            lstapp("moder")
+            lstapp("-26 96/")
         # ACER module
         lstapp("acer")
         lstapp("-21 -26 0 27 28/")
-        lstapp("1 1 1 .%s/" % tmpsuff)
-        lstapp("'%s, %s, NJOY%s, %s %s'/" % (ASA, libname, vers,
-                                             hostname, now))
-        lstapp("%s %12.5e/" % (MAT, tmp))
+        lstapp(f"1 1 1 .{tmpsuff}/")
+        lstapp(f"'{ASA}, {libname}, NJOY{vers}, {hostname} {now}'/")
+        lstapp(f"{MAT} {tmp:12.5e}/")
         lstapp("1 1/")
         lstapp("/")
         lstapp("acer")  # re-run for QA checks
         lstapp("0 27 33 29 30/")
-        lstapp("7 1 1 .%s/" % tmpsuff)
+        lstapp(f"7 1 1 .{tmpsuff}/")
         lstapp("''/")
 
         # VIEWR module
@@ -963,19 +1017,19 @@ def build_njoy_deck(MAT, ASA, proj, libname, vers, tmp=None, kerma=None):
         lstapp("viewr")
         lstapp("40 35/")  # plot HEATR output
 
-    elif proj == "n" and kerma is True:
+    elif proj == "n" and kerma:
 
         # HEATR module (gamma transport)
         lstapp("heatr")
         lstapp("-21 -23 -54 60/")
-        lstapp("%s 7 0 0 0 2/" % MAT)
+        lstapp(f"{MAT} 7 0 0 0 2/")
         lstapp("302 303 304 318 401 443 444/")
 
         # PURR module
         lstapp("purr")
         lstapp("-21 -54 -56/")
-        lstapp("%s 1 7 20 64/" % MAT)
-        lstapp("%12.5e/" % tmp)
+        lstapp(f"{MAT} 1 7 20 64/")
+        lstapp(f"{tmp:12.5e}/")
         lstapp("1.0e10 1.0e5 1.0e4 1.0e3 1.0e2 1.0e1 1/")
         lstapp("0/")
 
@@ -990,9 +1044,8 @@ def build_njoy_deck(MAT, ASA, proj, libname, vers, tmp=None, kerma=None):
         lstapp("acer")
         lstapp("20 21 0 29 30/")
         lstapp("4 1 1 .00/")
-        lstapp("'%s, %s, NJOY%s, %s %s'/" % (ASA, libname, vers,
-                                             hostname, now))
-        lstapp(" %s/" % MAT)
+        lstapp(f"'{ASA}, {libname}, NJOY{vers}, {hostname} {now}'/")
+        lstapp(f" {MAT}/")
         # no QA checks, no ACER plot available for this kind of data (2020)
 
     elif proj == "pn":  # photo-nuclear data
@@ -1006,7 +1059,7 @@ def build_njoy_deck(MAT, ASA, proj, libname, vers, tmp=None, kerma=None):
         lstapp("reconr")
         lstapp("-21 -22/")
         lstapp("/")
-        lstapp("%s 1 0/" % MAT)
+        lstapp(f"{MAT} 1 0/")
         lstapp("0.001 0./")
         lstapp("/")
         lstapp("0/")
@@ -1014,13 +1067,12 @@ def build_njoy_deck(MAT, ASA, proj, libname, vers, tmp=None, kerma=None):
         # ACER module
         lstapp("acer")
         lstapp("-21 -22 0 27 28/")
-        lstapp("5 0 1 .%s/" % tmpsuff)
-        lstapp("'%s, %s, NJOY%s, %s %s'/" % (ASA, libname, vers,
-                                             hostname, now))
-        lstapp("%s/" % MAT)
+        lstapp(f"5 0 1 .{tmpsuff}/")
+        lstapp(f"'{ASA}, {libname}, NJOY{vers}, {hostname} {now}'/")
+        lstapp(f"{MAT}/")
         lstapp("acer")  # re-run for QA checks
         lstapp("0 27 33 29 30/")
-        lstapp("7 1 1 .%s/" % tmpsuff)
+        lstapp(f"7 1 1 .{tmpsuff}/")
         lstapp("/")
 
         # VIEWR module
@@ -1066,7 +1118,7 @@ def convertxsdir(datapath, proj, libname, ndlpath, currpath=None):
     for p in proj:
         # define paths
         datastr = "datapath=%s" % "/".join([ndlpath, p])
-        fname = 'sss2_%s_%s.xsdir' % (libname, p)
+        fname = f'sss2_{libname}_{p}.xsdir'
         fname = os.path.join(pwd, fname)
         xsdirpath = os.path.join(datapath, p, "xsdir")
 
@@ -1089,8 +1141,8 @@ def convertxsdir(datapath, proj, libname, ndlpath, currpath=None):
             f.write(xsdirlines)
 
         # run xsdirconvert.pl utility (by VTT)
-        xsdataname = 'sss2_%s_%s.xsdata' % (libname, p)
-        cmd = "./xsdirconvert.pl %s > %s" % (fname, xsdataname)
+        xsdataname = f'sss2_{libname}_{p}.xsdata'
+        cmd = f"./xsdirconvert.pl {fname} > {xsdataname}"
         p = Popen(cmd, shell=True, stdout=PIPE, stderr=PIPE, close_fds=True)
         stream, stream_stderr = p.communicate()
         # decode in UTF-8
@@ -1107,8 +1159,8 @@ def convertxsdir(datapath, proj, libname, ndlpath, currpath=None):
                  if isfile(os.path.join(pwd, f))
                  if f.endswith(".xsdir")]
 
-    xsdatafname = 'sss2_%s.xsdata' % libname
-    xsdirfname = 'sss2_%s.xsdir' % libname
+    xsdatafname = f'sss2_{libname}.xsdata'
+    xsdirfname = f'sss2_{libname}.xsdir'
 
     _mergefiles(xsdatafname, xsdatalist)
     _mergefiles(xsdirfname, xsdirlist)
