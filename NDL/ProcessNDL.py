@@ -20,6 +20,7 @@ import os
 import re
 import gzip
 import glob
+import chardet
 import tempfile
 import fileinput
 import time as t
@@ -40,6 +41,14 @@ partdict = {"n": ["neutron", "neutrons", "neutronic", "n"],
             "pa": ["photon", "photons", "photo-atomic", "photoatomic",
                    "pa"],
             "pn": ["gamma", "photo-nuclear", "photonuclear", "pn"]}
+
+replace_dict = {"Z": "\\d+", 
+                "S": "\\w+",
+                "A": "\\d+",
+                "N": "\\d+",
+                "L": "\\w+",
+                "I": "\\d+"
+               }
 
 # define particles ACE type
 pdict = {"n": "c", "pa": "p", "pn": "g"}
@@ -64,7 +73,17 @@ def get_njoy():
         raise ValueError("environment variable 'NJOY' is not assigned")
     return exe
 
-def buildacelib(inpath, libpath, data, libext, particles, njoyver,
+
+def get_njoy_ver():
+    if "2016" in get_njoy():
+        njoyver = "2016"
+    elif "2021" in get_njoy():
+        njoyver = "21"
+    else:
+        raise OSError("Cannot recognise NJOY version!")
+    return njoyver
+
+def buildacelib(inpath, libpath, data, libext, particles,
                 atom_relax=None, np=None, copyflag=True, binary=True,
                 njoypath=None):
     """
@@ -101,6 +120,7 @@ def buildacelib(inpath, libpath, data, libext, particles, njoyver,
     -------
     None.
     """
+    njoyver = get_njoy_ver()
     # define number of CPUs
     if np is None:
         np = mp.cpu_count()-2  # leave 2 free CPUs
@@ -226,25 +246,25 @@ def par_ace_lib(args):
         # run NJOY, then clean directory
         start_time = t.time()
 
-        outstream = run_njoy(os.path.join(inpath, proj, f), njoyver=njoyver,
-                             njoypath=njoypath)
+        outstream = run_njoy(os.path.join(inpath, proj, f))
 
         outstreamK = None
 
         if fK is not None:
-            outstreamK = run_njoy(os.path.join(inpath, proj, fK), njoyver=njoyver,
-                                  njoypath=njoypath)
+            outstreamK = run_njoy(os.path.join(inpath, proj, fK))
 
         success, KERMA_warn = move_and_clean(f, fK, outpath, tmpath, libpath, data,
                                              endfname, proj, atom_relax, binary)
 
         # completed and failed
-        if success is True:
+        if success:
             with open(os.path.join(outpath, 'COMPLETED.txt'), 'a') as compl:
-                compl.write(f"{f.split(".")[0]} processing COMPLETED. {printime(start_time)} \n")
+                arg1 = f.split(".")[0]
+                compl.write(f"{arg1} processing COMPLETED. {printime(start_time)} \n")
         else:
             with open(os.path.join(outpath, 'FAILED.txt'), 'a') as fail:
-                fail.write(f"{f.split(".")[0]} processing FAILED. {printime(start_time)} \n")
+                arg1 = f.split(".")[0]
+                fail.write(f"{arg1} processing FAILED. {printime(start_time)} \n")
 
         # NJOY warning and errors
         if outstream is not None:
@@ -592,7 +612,14 @@ def makeinput(datapath, pattern, part, libname, broad_temp=None, kerma=True,
     pattern : string
         string describing the file name pattern (e.g. n-Z_AS_A.endf, where Z
         is a keyword for atomic number, AS a keyword for the atomic symbol
-        and A a keyword for the mass number.)
+        and A a keyword for the mass number).
+        List of keywords:
+            -A : mass number
+            -S : atomic symbol
+            -Z : atomic number
+            -N : file number (for perturbed files)
+            -L : letters to be skipped
+            -I : digits to be skipped
     part : string
         incident particle for the desired nuclear data (e.g. "n" or "neutron",
         "pa" or "photo-atomic", and so on...)
@@ -621,15 +648,10 @@ def makeinput(datapath, pattern, part, libname, broad_temp=None, kerma=True,
     """
     # get NJOY version
     cmd = get_njoy()
-    if "2016" in cmd:
-        njoyver = "2016"
-    elif "2021" in cmd:
-        njoyver = "21"
-    else:
-        raise OSError("Cannot recognise NJOY version!")
+    njoyver = get_njoy_ver()
     # find pattern separators
     pattern, lib_extension = os.path.splitext(pattern)
-    filesep = re.split(r"[ A Z S N]+", pattern)
+    filesep = re.split(r"[ A Z S N L I]+", pattern)
 
     # join for using re.split later
     filesep = "|".join(filesep)
@@ -649,13 +671,10 @@ def makeinput(datapath, pattern, part, libname, broad_temp=None, kerma=True,
     if max(len_keys) > 1:
         # split each key checking its length
         newkeys = []
-
         for k in keys:
-
             if len(k) > 1:
                 k = list(filter(None, re.split("", k)))
                 newkeys.extend(k)
-
             else:
                 newkeys.append(k)
 
@@ -666,14 +685,14 @@ def makeinput(datapath, pattern, part, libname, broad_temp=None, kerma=True,
     patterndict = {s: ipos for ipos, s in enumerate(keys)}
 
     # replace A, AS and Z (if present) with \w+ for regex later use
-    str_iterator = re.finditer(r"[A Z S N]+", pattern)
+    str_iterator = re.finditer(r"[A Z S N L I]+", pattern)
     str_pos = [val.span() for val in str_iterator]
     min_pos = min(str_pos, key=itemgetter(0))[0]
     max_pos = max(str_pos, key=itemgetter(1))[1]
     pattern = pattern[min_pos:max_pos]
 
     # store separator between AS, Z and A
-    filesep = list(filter(None, re.split(r"[ A Z S N]+", pattern)))
+    filesep = list(filter(None, re.split(r"[ A Z S N L I]+", pattern)))
 
     # join for using re.split later
     x = "|".join(filesep)
@@ -683,7 +702,8 @@ def makeinput(datapath, pattern, part, libname, broad_temp=None, kerma=True,
             x = x.replace(s, '|{}|'.format(s))
     # replace A, AS, Z and N (if present) with \w+ for regex later use
     filesep = x
-    pattern = pattern.replace("Z", "\\d+").replace("S", "\\w+").replace("A", "\\d+").replace("N", "\\d+")
+    for what, which in replace_dict.items():
+        pattern = pattern.replace(what, which)
 
     # define general pattern
     pattern = re.compile(pattern)
@@ -699,9 +719,7 @@ def makeinput(datapath, pattern, part, libname, broad_temp=None, kerma=True,
 
     # define particle key
     for key, names in partdict.items():
-
         if part in names:
-
             proj = key
 
     # gather atomic relaxation ENDF-6 files in datapath
@@ -739,7 +757,11 @@ def makeinput(datapath, pattern, part, libname, broad_temp=None, kerma=True,
             metaflag = None  # initial value of flag for metastable elements
 
         # split according to separators
-        iS, iE = re.search(pattern, endf).span()
+        try:
+            iS, iE = re.search(pattern, endf).span()
+        except AttributeError:
+            raise NDLError(f"Pattern '{pattern.pattern}' not found in file name '{endf}'!")
+
         nuclname = nuclname[iS:iE]
         if filesep != '':
             if 'endf' in filesep:
@@ -815,7 +837,7 @@ def makeinput(datapath, pattern, part, libname, broad_temp=None, kerma=True,
                 ASA = AS+"-"+A+"m"
 
             # define basic ZAID (atomic and mass number)
-            ZAID = str(Z)+A
+            ZAID = f"{Z}{int(A):03d}"
 
             # parse MAT number from library file
             endf = os.path.join(datapath, endf)
@@ -824,10 +846,10 @@ def makeinput(datapath, pattern, part, libname, broad_temp=None, kerma=True,
             ZA, MAT, natflag, iso = parseENDF6(endf)
 
             if metaflag == 1 and iso == 0:
-                raise OSError("Name and isomer state conflict in %s" % endf)
+                raise OSError(f"Name and isomer state conflict in {endf}")
 
             if ZA != ZAID and natflag != 1:
-                raise OSError("Name and file ZAID conflict in %s" % endf)
+                raise OSError(f"Name and file ZAID conflict in {endf}")
 
             # rename ENDF-6 file with PoliTo nomenclature
             endfnewname = '{}-{}'.format(ASA, N) if N else '{}'.format(ASA)
@@ -1230,8 +1252,11 @@ def ASZ_periodic_table():
 def parseENDF6(fname):
     """Parse ENDF-6 format file to check Z, A, MAT, natural and isomeric flags."""
     linepos = -10
+    # determine enconding (not all files are UTF-8)
+    with open(fname, "rb") as fenc:
+        encoding = chardet.detect(fenc.read())["encoding"]
 
-    with open(fname) as f:
+    with open(fname, encoding=encoding, errors='ignore') as f:
 
         for iline, line in enumerate(f):
 
@@ -1372,3 +1397,7 @@ def printime(start_time):
         elaps = "Elapsed time %f h." % (dt/3600)
 
     return elaps
+
+
+class NDLError(Exception):
+    pass
