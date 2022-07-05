@@ -601,7 +601,7 @@ def run_njoy(inp):
 
 def makeinput(datapath, pattern, part, libname, broad_temp=None, kerma=True,
               outpath=None, atomrelax_datapath=None, random=False,
-              binary=True):
+              binary=True, newlibext=None):
     """
     Write the NJOY input to files for future processing.
 
@@ -749,6 +749,8 @@ def makeinput(datapath, pattern, part, libname, broad_temp=None, kerma=True,
 
         if lib_extension == '':
             lib_extension = 'endf6'
+        if newlibext is not None:
+            lib_extension = newlibext
         # 1st check if nuclide is metastable
         if re.search("([0-9]+)m", nuclname) is not None:
             metaflag = 1  # initial value of flag for metastable elements
@@ -781,12 +783,10 @@ def makeinput(datapath, pattern, part, libname, broad_temp=None, kerma=True,
         else:
             keys = list(filter(None, re.split("(\\d+)", nuclname)))
 
-
-
         # get atomic number Z and atomic symbol AS
         try:  # name contains atomic symbol explicitly
 
-            AS = keys[patterndict["S"]]  # get position with dict val
+            AS = keys[patterndict["S"]].capitalize()  # get position with dict val
             try:
                 N = keys[patterndict["N"]]
             except KeyError:
