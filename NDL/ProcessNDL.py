@@ -1,15 +1,6 @@
-################################
-#  _   _ ______ __  __  ____   #
-# | \ | |  ____|  \/  |/ __ \  #
-# |  \| | |__  | \  / | |  | | #
-# | . ` |  __| | |\/| | |  | | #
-# | |\  | |____| |  | | |__| | #
-# |_| \_|______|_|  |_|\____/  #
-#                              #
-################################
-
 """
-Authors: N. Abrate (inspired by an Octave script by D. Caron, C. Di Gesare).
+Authors: N. Abrate - NEMO Group, Energy Department, Politecnico di Torino.
+email: nicolo.abrate@polito.it
 
 File: ProcessNDL.py
 Description: Module for generating NJOY input files and processing ENDF-6
@@ -83,9 +74,10 @@ def get_njoy_ver():
         raise OSError("Cannot recognise NJOY version!")
     return njoyver
 
+
 def buildacelib(inpath, libpath, data, libext, particles,
                 atom_relax=None, np=None, copyflag=True, binary=True,
-                njoypath=None):
+                njoypath=None, kerma=True):
     """
     Build the ACE library (with NJOY stream, VIEWR, XSDIR PENDF output files).
 
@@ -160,12 +152,13 @@ def buildacelib(inpath, libpath, data, libext, particles,
 
         # create KERMA input files list consistently
         inpfilesK = [None]*len(inpfiles)
-        for ipos, f in enumerate(inpfiles):
-            name, ext = f.split(".")
-            kname = f"{name}.njoyinpK"
+        if kerma:
+            for ipos, f in enumerate(inpfiles):
+                name, ext = f.split(".")
+                kname = f"{name}.njoyinpK"
 
-            if isfile(join(inpath, proj, kname)):
-                inpfilesK[ipos] = kname
+                if isfile(join(inpath, proj, kname)):
+                    inpfilesK[ipos] = kname
 
         # print warning for the user
         if inpfiles == []:
@@ -177,7 +170,7 @@ def buildacelib(inpath, libpath, data, libext, particles,
 
         # define list of arguments for parallel function
         args = [(inpath, outpath, proj, libext, libpath, data, atom_relax,
-                 copyflag, njoyver, binary, njoypath)]
+                 copyflag, njoyver, binary, njoypath, kerma)]
         args = list(zip(inpfiles, inpfilesK, args*len(inpfiles)))
 
         # process input with NJOY on np cores
@@ -204,7 +197,7 @@ def par_ace_lib(args):
     """
     # unpack input arguments
     f, fK, tup = args
-    inpath, outpath, proj, libext, libpath, data, atom_relax, copyflag, njoyver, binary, njoypath = tup
+    inpath, outpath, proj, libext, libpath, data, atom_relax, copyflag, njoyver, binary, njoypath, kerma = tup
 
     # create temporary directories in outpath to avoid mixing NJOY output
     with tempfile.TemporaryDirectory(dir=outpath) as tmpath:
@@ -254,7 +247,7 @@ def par_ace_lib(args):
             outstreamK = run_njoy(os.path.join(inpath, proj, fK))
 
         success, KERMA_warn = move_and_clean(f, fK, outpath, tmpath, libpath, data,
-                                             endfname, proj, atom_relax, binary)
+                                             endfname, proj, atom_relax, binary, kerma=kerma)
 
         # completed and failed
         if success:
@@ -297,7 +290,7 @@ def par_ace_lib(args):
 
 
 def move_and_clean(inp, inpK, path, tmpath, libpath, data, endfname, proj,
-                   atom_relax=None, binary=True):
+                   atom_relax=None, binary=True, kerma=False):
     """
     Move and clean output files in temporary directory.
 
@@ -348,13 +341,13 @@ def move_and_clean(inp, inpK, path, tmpath, libpath, data, endfname, proj,
     else:
         atom_relax_datapath = None
 
-    pendfnames = ["tape26", "tape56"] if binary else ["tape96", "tape67"]
+    pendfnames = ["tape26"] if binary else ["tape96"]
 
     # neutrons dict with names of files to be kept when cleaning files
     dir_names = {"n": {datapath: "tape20", "pendfdir_bin": pendfnames,
                        "acedir": "tape29", "xsdir": "tape30_1", "njoyout": "out.gz",
-                       "viewheatdir": ["tape35", "tape60"], "viewacedir": "tape34",
-                       "njoyinp": [inp, inpK]},
+                       "viewheatdir": ["tape35"], "viewacedir": "tape34",
+                       "njoyinp": [inp]},
                  "pa": {datapath: "tape20", atom_relax_datapath: "tape21",
                         "acedir": "tape29", "xsdir": "tape30_1",
                         "njoyout": "out.gz", "njoyinp": inp},
@@ -362,13 +355,18 @@ def move_and_clean(inp, inpK, path, tmpath, libpath, data, endfname, proj,
                         "tape29", "xsdir": "tape30_1", "njoyout": "out.gz",
                         "viewacedir": "tape34", "njoyinp": inp}}
 
+    if kerma:
+        pendfnames = ["tape26", "tape56"] if binary else ["tape96", "tape67"]
+        dir_names["n"]["viewheatdir"] = pendfnames
+        dir_names["n"]["viewheatdir"] = ["tape35", "tape60"]
+        dir_names["n"]["njoyinp"] = [inp, inpK]
+
     # neutrons dict with new names when moving files
     ext_names = {"n": {"tape20": endfname, "tape21": endfname,
                        "tape26": ".pendf", "tape96": ".pendf", "tape29": ".ace",
                        "tape30_1": ".xsdir", "out.gz": ".out.gz",
                        "tape34": ".eps", "tape35": ".eps", inp: ".njoyinp",
-                       inpK: ".njoyinpK", "tape56": "_KERMA.pendf", "tape60":
-                       "_KERMA.eps", "tape67": "_KERMA.pendf",},
+                       },
                  "pa": {"tape20": endfname, "tape21": endfname,
                         "tape29": ".ace", "tape30_1": ".xsdir",
                         "out.gz": ".out.gz", inp: ".njoyinp"},
@@ -376,10 +374,15 @@ def move_and_clean(inp, inpK, path, tmpath, libpath, data, endfname, proj,
                         "tape29": ".ace", "tape30_1": ".xsdir",
                         "out.gz": ".out.gz", "tape34": ".eps",
                         inp: ".njoyinp"}}
+    if kerma:
+        ext_names["n"][inpK] =  ".njoyinpK"
+        ext_names["n"]["tape56"] = "_KERMA.pendf"
+        ext_names["n"]["tape60"] = "_KERMA.eps"
+        ext_names["n"]["tape67"] = "_KERMA.pendf"
 
     try:
 
-        if proj == 'n' or proj == 'pn':
+        if kerma and (proj == 'n' or proj == 'pn'):
             fiss, ures = False, False
             warn = []
             # fix tape29 (ACE)
@@ -474,7 +477,8 @@ def move_and_clean(inp, inpK, path, tmpath, libpath, data, endfname, proj,
         else:
             warn = []
 
-    except FileNotFoundError:
+    except FileNotFoundError as fnf:
+        print(str(fnf))
         success = False
 
     try:
@@ -491,7 +495,8 @@ def move_and_clean(inp, inpK, path, tmpath, libpath, data, endfname, proj,
                     # write new line in new file
                     fnew.write(line)
 
-    except FileNotFoundError:
+    except FileNotFoundError as fnf:
+        print(str(fnf))
         success = False
 
     # loop over dictionaries
@@ -529,7 +534,8 @@ def move_and_clean(inp, inpK, path, tmpath, libpath, data, endfname, proj,
                 # move and rename file
                 sh.move(ipath, opath)
 
-            except FileNotFoundError:
+            except FileNotFoundError as fnf:
+                print(str(fnf))
                 success = False
 
     # clean base directory from other NJOY tapes
